@@ -3,6 +3,13 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.13.0 — 2026-10-29
+- Turn photos in the preview: after a front scan, a green arrow in each outline shows where that
+  photo's top is. Click a photo to turn it a quarter turn clockwise, right-click for the other
+  way. It's a virtual turn: only the photo's orientation tag (EXIF) changes, which Immich,
+  Windows and other photo apps follow; the scan itself is not re-saved. Turn upright… (Claude)
+  turns the pixels instead and clears a turn set by hand.
+
 ## 1.12.1 — 2026-10-29
 - Fixed: a " - " in a naming template came out as a single space ("01 Γάμος" instead of
   "01 - Γάμος").
