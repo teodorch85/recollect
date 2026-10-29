@@ -17,6 +17,7 @@ UNKNOWN = "Unknown year"  # same as organizer.UNKNOWN
 DEFAULT = "{{#if y}}{{y}}{{else}}Unknown year{{/if}}/{{album}}/{{filename}}"
 PRESETS = [
     DEFAULT,
+    "{{#if y}}{{y}}{{else}}Unknown year{{/if}}/{{#if MM}}{{MM}} - {{/if}}{{album}}/{{id}}",
     "{{#if y}}{{y}}{{else}}Unknown year{{/if}}/{{filename}}",
     "{{#if y}}{{y}}{{else}}Unknown year{{/if}}/{{#if MM}}{{MM}}{{else}}Unknown month{{/if}}/{{filename}}",
     "{{#if y}}{{y}}{{else}}Unknown year{{/if}}/{{#if MM}}{{y}}-{{MM}}{{else}}{{y}}{{/if}}/{{filename}}",
@@ -106,7 +107,8 @@ def values_for(year, month, day, album, pid, slug, paper="", size=""):
 def render(parts, values):
     """(folder parts, file name without extension) for one photo."""
     text = _render(parts, values)
-    segments = [re.sub(r"[-_ ]{2,}", lambda m: m.group(0)[0], s).strip(" -_.") for s in text.split("/")]
+    # "1994--" (empty month and day) -> "1994"; a " - " typed in the template stays
+    segments = [re.sub(r"([-_ ])\1+", r"\1", s).strip(" -_.") for s in text.split("/")]
     segments = [s for s in segments if s and s not in (".", "..")]
     name = segments.pop() if segments else ""
     pid = values["id"]

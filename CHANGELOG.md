@@ -3,6 +3,11 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.12.1 — 2026-10-29
+- Fixed: a " - " in a naming template came out as a single space ("01 Γάμος" instead of
+  "01 - Γάμος").
+- New preset: Year / MM - Batch / number, e.g. 2007/01 - Γάμος Βασίλη/00004.jpg.
+
 ## 1.12.0 — 2026-10-29
 - Naming template (Settings ▸ Library), in the style of Immich's storage template: {{y}} {{yy}}
   {{M}} {{MM}} {{MMM}} {{MMMM}} {{d}} {{dd}}, {{album}} (the batch), {{id}}, {{filename}},
