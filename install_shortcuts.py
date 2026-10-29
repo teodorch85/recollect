@@ -1,4 +1,5 @@
-"""Create ReCollect shortcuts on the Desktop and in the Start menu (run again if the folder moves).
+"""Create ReCollect shortcuts on the Desktop, in the Start menu and in this folder (run again if the
+folder moves).
 
 They carry the app's icon and taskbar ID, so pinning one to the taskbar and the running window
 share a single taskbar button.
@@ -31,3 +32,4 @@ def make(path):
 if __name__ == "__main__":
     for folder in (shellcon.CSIDL_DESKTOPDIRECTORY, shellcon.CSIDL_PROGRAMS):
         print(make(Path(shell.SHGetFolderPath(0, folder, None, 0)) / "ReCollect.lnk"))
+    print(make(APP_DIR / "ReCollect.lnk"))  # double-click to open, in place of the old ReCollect.bat

@@ -3,7 +3,7 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
-## 1.4.0 — unreleased (beta)
+## 1.4.0 — 2026-10-29
 - A notification when a job finishes (the usual Windows popup in the corner, gone after about
   5 seconds) and a flashing taskbar button if ReCollect isn't in front, so you can wait away
   from the screen. Without Windows notifications, a small popup of ReCollect's own is shown.
@@ -15,7 +15,10 @@ new features, PATCH for fixes. The running version shows in the window title.
 - Update prompt: when a newer version lands in the folder, a banner offers Restart now, What's
   new or Later; restarting waits until no job or bed is in progress. Only one ReCollect runs at
   a time: starting it again brings the open window to the front.
-- For the Windows notifications, run `.venv\Scripts\pip install -r requirements.txt` once.
+- ReCollect.bat is gone: open ReCollect from its shortcut (Desktop, Start menu, or the new
+  ReCollect shortcut in the app folder), which starts it with no console window.
+- Once after updating: run `.venv\Scripts\pip install -r requirements.txt` (for the Windows
+  notifications) and `.venv\Scripts\python install_shortcuts.py` (for the folder shortcut).
 
 ## 1.3.1 — 2026-10-29
 - Prints lying back-side down are recognised (white paper with almost no picture): Preview says
