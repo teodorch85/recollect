@@ -181,6 +181,9 @@ class SettingsWindow:
         self._row(card, "Calibrate empty bed", "Scans the empty glass so prints can be told apart from the lid. "
                                                "Do it again if the lid or glass has changed.",
                   self._button("Calibrate…", self._calibrate))
+        self._row(card, "Reset scanner", "If the light keeps flashing or scans fail: restarts the scanner's "
+                                         "connection and Windows' scanner service. Windows asks for permission.",
+                  self._button("Reset…", self._reset_scanner))
 
     def _page_image(self):
         a = self.app
@@ -237,6 +240,17 @@ class SettingsWindow:
             return
         self.win.destroy()
         self.app._ask_calibrate()
+
+    def _reset_scanner(self):
+        if self.app.busy:
+            messagebox.showinfo("Reset scanner", "Wait for the current job to finish (or cancel it) first.",
+                                parent=self.win)
+            return
+        if messagebox.askokcancel("Reset scanner", "ReCollect will reconnect the scanner and restart Windows' "
+                                  "scanner service. It takes about 10 seconds; Windows will ask for permission.\n\n"
+                                  "Prints on the glass can stay where they are.", parent=self.win):
+            self.win.destroy()
+            self.app.reset_scanner()
 
     def _test_notification(self):
         try:

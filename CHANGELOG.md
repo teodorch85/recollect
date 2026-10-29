@@ -3,6 +3,11 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.6.0 — unreleased (beta)
+- Reset scanner (Settings ▸ Scanning): when the light keeps flashing or scans fail, reconnects the
+  scanner's USB device and restarts Windows' scanner service, like unplugging and plugging it in.
+  Windows asks for permission. Scanner error messages point to it.
+
 ## 1.5.0 — 2026-10-29
 - Settings window [Ctrl+,]: sections on the left (Library, Scanning, Image, Notifications,
   Updates, About), each setting with a short explanation; changes are saved at once.
