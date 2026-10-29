@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+# this computer's own state, not the app
+settings.json
+empty_bed.png
