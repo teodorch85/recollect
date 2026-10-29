@@ -14,6 +14,7 @@ import queue
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -33,17 +34,23 @@ import notify
 import ocr
 import organizer
 import settings_window
+import updater
 from version import __version__
 from scanner import ScannerError, reset_scanner, scan_bed
 
-APP_DIR = Path(__file__).resolve().parent
-SETTINGS_FILE = APP_DIR / "settings.json"
-REFERENCE_FILE = APP_DIR / "empty_bed.png"
+APP_DIR = Path(__file__).resolve().parent  # the app's own files (inside ReCollect.exe: its _internal folder)
+# Settings and calibration: next to the code when run from source; for ReCollect.exe in the user's
+# AppData, so an update can replace the program folder without losing them.
+DATA_DIR = (Path(os.environ.get("LOCALAPPDATA", Path.home())) / "ReCollect") if updater.FROZEN else APP_DIR
+SETTINGS_FILE = DATA_DIR / "settings.json"
+REFERENCE_FILE = DATA_DIR / "empty_bed.png"
 # title of the Windows notification when each job finishes
 JOB_TITLES = {"_do_fronts": "Fronts scanned", "_do_backs": "Backs read, photos filed", "_do_preview": "Preview ready",
               "_do_find_duplicates": "Duplicate check finished", "_do_calibrate": "Scanner calibrated",
-              "_do_reset_scanner": "Scanner reset"}
-UPDATE_CHECK_MS = 60_000  # how often to look for a newer version in this folder
+              "_do_reset_scanner": "Scanner reset", "_do_update": "Update downloaded"}
+SCANNER_JOBS = ("_do_fronts", "_do_backs", "_do_preview", "_do_calibrate")
+UPDATE_CHECK_MS = 60_000  # how often to look for a newer version in this folder (from source)
+ONLINE_CHECK_S = 6 * 3600  # how often ReCollect.exe asks GitHub for a new release
 PREVIEW_DPI = 150  # quick look at the bed: about 10 s, enough to find the prints
 
 
@@ -67,6 +74,7 @@ DEFAULTS = {
     "notify": True,         # popup when a job finishes
     "flash": True,          # flash the taskbar button when the window isn't in front
     "check_updates": True,
+    "shortcuts_for": "",    # the ReCollect.exe the Desktop and Start menu shortcuts point to
 }
 
 
@@ -119,6 +127,8 @@ class App:
         self._cat = None
         self.restart_requested = False
         self._offered = None  # version already offered, so it is announced once
+        self._release = None  # (version, zip url, page) of a newer release on GitHub
+        self._last_online = time.time() - ONLINE_CHECK_S + 60  # first look a minute after start
         self.app_dir = APP_DIR
         self._settings_win = None
 
@@ -202,8 +212,10 @@ class App:
                  font=("Segoe UI", 10, "bold"), wraplength=int(340 * self.ui), justify="left").pack(anchor="w")
         row = tk.Frame(self.update_box, background="#E1F5EE")
         row.pack(anchor="w", pady=(4, 0))
-        ttk.Button(row, text="Restart now", command=self.restart).pack(side="left")
-        ttk.Button(row, text="What's new", command=self._whats_new).pack(side="left", padx=4)
+        self.update_btn = ttk.Button(row, text="Restart now", command=self.restart)
+        self.update_btn.pack(side="left")
+        ttk.Button(row, text="What's new", command=lambda: self._whats_new(self._release and self._release[2])
+                   ).pack(side="left", padx=4)
         ttk.Button(row, text="Later", command=self.update_box.pack_forget).pack(side="left")
 
         files = ttk.LabelFrame(side, text="This batch", padding=6)
@@ -430,8 +442,9 @@ class App:
                       sharpen=self.sharpen_var.get(), restore_color=bool(self.restore_var.get()),
                       scan_backs=bool(self.backs_var.get()), batch=self.batch_var.get(),
                       notify=bool(self.notify_var.get()), flash=bool(self.flash_var.get()),
-                      check_updates=bool(self.updates_var.get()))
+                      check_updates=bool(self.updates_var.get()), shortcuts_for=self.s["shortcuts_for"])
         try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
             SETTINGS_FILE.write_text(json.dumps(self.s, indent=2), encoding="utf-8")
         except OSError:
             pass
@@ -462,27 +475,89 @@ class App:
             self._run(self._do_backs, "Scanning backs…")
 
     def _check_update(self):
-        new = disk_version()
-        if self.updates_var.get() and new and new != self._offered and _newer(new, __version__):
-            self._offer(new)  # once per version, so Later keeps the banner away
+        if updater.FROZEN:
+            if self.updates_var.get() and time.time() - self._last_online >= ONLINE_CHECK_S:
+                self._last_online = time.time()
+                threading.Thread(target=self._ask_github, daemon=True).start()
+        else:
+            new = disk_version()
+            if self.updates_var.get() and new and new != self._offered and _newer(new, __version__):
+                self._offer(new)  # once per version, so Later keeps the banner away
         self.root.after(UPDATE_CHECK_MS, self._check_update)
 
+    def _ask_github(self):
+        try:
+            release = updater.latest_release(__version__)
+        except updater.UpdateError:
+            return  # offline: try again next time
+        if release and release[0] != self._offered:
+            self.events.put(("release", release))
+
     def check_update_now(self):
-        """Settings > Check now: show the banner if a newer version is in the folder; returns it or None."""
+        """Settings > Check now: (newer version or None, problem or None); shows the banner if there is one."""
+        if updater.FROZEN:
+            try:
+                release = updater.latest_release(__version__)
+            except updater.UpdateError as e:
+                return None, str(e)
+            if release:
+                self._offer(release[0], release)
+            return (release[0] if release else None), None
         new = disk_version()
         if new and _newer(new, __version__):
             self._offer(new)
-            return new
-        return None
+            return new, None
+        return None, None
 
-    def _offer(self, new):
-        self.update_text.set(f"ReCollect {new} is ready. Restart to use it (you're on {__version__}).")
+    def _offer(self, new, release=None):
+        self._release = release
+        if release:  # ReCollect.exe: download it from GitHub
+            self.update_text.set(f"ReCollect {new} is available (you're on {__version__}).")
+            self.update_btn.config(text="Update now", command=self.update_now)
+        else:  # from source: the new files are already in the folder
+            self.update_text.set(f"ReCollect {new} is ready. Restart to use it (you're on {__version__}).")
+            self.update_btn.config(text="Restart now", command=self.restart)
         self.update_box.pack(fill="x", pady=(0, 6), before=self._first_box)
         if new != self._offered:
             self._offered = new
-            self._notify("Update ready", f"ReCollect {new} is ready. Restart it when convenient.")
+            self._notify("Update available" if release else "Update ready",
+                         f"ReCollect {new} is {'available' if release else 'ready'}. "
+                         f"{'Update' if release else 'Restart'} when convenient.")
 
-    def _whats_new(self):
+    def _can_close(self, what):
+        """Not in the middle of a job or a bed; says why otherwise."""
+        if self.busy:
+            messagebox.showinfo(what, f"Wait for the current job to finish (or cancel it), then {what.lower()}.")
+            return False
+        if self.state == "back":
+            messagebox.showinfo(what, "The prints on the glass are waiting for their backs. "
+                                      f"Scan the backs (Space) or skip them (N) first, then {what.lower()}.")
+            return False
+        return True
+
+    def update_now(self):
+        if self._release and self._can_close("Update"):
+            self._run(self._do_update, f"Downloading ReCollect {self._release[0]}…")
+
+    def _do_update(self):
+        new_dir = updater.download(self._release[1], self._progress)
+        return None, "Update downloaded. ReCollect closes and opens again in a few seconds…", \
+            lambda: self._apply_update(new_dir)
+
+    def _apply_update(self, new_dir):
+        try:
+            updater.install_and_restart(new_dir)
+        except updater.UpdateError as e:
+            self.status.set("⚠ " + str(e))
+            return
+        self._save_settings()
+        self.root.destroy()  # the helper copies the new files once this process has exited, then starts it
+
+    def _whats_new(self, page=None):
+        if page:  # the new release's notes on GitHub
+            import webbrowser
+            webbrowser.open(page)
+            return
         try:
             os.startfile(APP_DIR / "CHANGELOG.md")
         except OSError:  # no app set up for .md files
@@ -498,12 +573,7 @@ class App:
 
     def restart(self):
         """Close and start again with the new version, but never in the middle of a job or a bed."""
-        if self.busy:
-            messagebox.showinfo("Restart", "Wait for the current job to finish (or cancel it), then restart.")
-            return
-        if self.state == "back":
-            messagebox.showinfo("Restart", "The prints on the glass are waiting for their backs. "
-                                           "Scan the backs (Space) or skip them (N) first, then restart.")
+        if not self._can_close("Restart"):
             return
         self._save_settings()
         self.restart_requested = True
@@ -581,7 +651,7 @@ class App:
         self.state, self.bed = "front", []
 
     def _run(self, fn, message):
-        self._job = JOB_TITLES.get(fn.__name__, "Done")
+        self._job, self._job_fn = JOB_TITLES.get(fn.__name__, "Done"), fn.__name__
         self.cancelling.clear()
         self._phase = None
         self.bar["value"] = 0
@@ -595,7 +665,7 @@ class App:
             self.events.put(("done", fn()))
         except Cancelled:
             self.events.put(("cancelled", None))
-        except ScannerError as e:
+        except (ScannerError, updater.UpdateError) as e:
             self.events.put(("error", str(e)))
         except Exception as e:  # keep the app alive whatever happens
             self.events.put(("error", f"{type(e).__name__}: {e}"))
@@ -604,6 +674,9 @@ class App:
         try:
             while True:
                 kind, payload = self.events.get_nowait()
+                if kind == "release":  # found by the background check on GitHub
+                    self._offer(payload[0], payload)
+                    continue
                 if kind == "note":  # progress message from a job that is still running
                     self.status.set(payload)
                     continue
@@ -627,7 +700,7 @@ class App:
                 self.cancelling.clear()
                 if kind == "error":
                     self._refresh()
-                    tip = "" if self._job == "Scanner reset" else " Still stuck? Settings ▸ Scanning ▸ Reset scanner."
+                    tip = " Still stuck? Settings ▸ Scanning ▸ Reset scanner." if self._job_fn in SCANNER_JOBS else ""
                     self.status.set("⚠ " + payload + tip)
                     self._notify("Scanner problem", payload)
                 else:
@@ -967,9 +1040,45 @@ def _wait_for(pid, seconds=20):
 
 
 def _relaunch():
+    if updater.FROZEN:
+        subprocess.Popen([sys.executable, "--after", str(os.getpid())], cwd=Path(sys.executable).parent)
+        return
     exe = APP_DIR / ".venv" / "Scripts" / "pythonw.exe"
     subprocess.Popen([str(exe if exe.exists() else sys.executable), str(APP_DIR / "photo_scanner.py"),
                       "--after", str(os.getpid())], cwd=APP_DIR)
+
+
+def _first_start_of_exe():
+    """ReCollect.exe: bring over settings and calibration from the source version (found through its
+    shortcut), and point the shortcuts at the exe. Never stops the app from starting."""
+    import shutil
+    import install_shortcuts
+    exe = str(Path(sys.executable))
+    try:
+        if not SETTINGS_FILE.exists():
+            old = install_shortcuts.old_folder()
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            for name in ("settings.json", "empty_bed.png"):
+                if old and (old / name).exists():
+                    shutil.copy2(old / name, DATA_DIR / name)
+        s = load_settings()
+        if s["shortcuts_for"] != exe:  # first start, or the folder was moved
+            install_shortcuts.ensure_for_exe(exe)
+            s["shortcuts_for"] = exe
+            SETTINGS_FILE.write_text(json.dumps(s, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _selftest():
+    """ReCollect.exe --selftest: everything the app loads later is in the bundle (run by the build)."""
+    import install_shortcuts  # noqa: F401
+    import win32con, win32gui, win32event, win32process  # noqa: F401
+    from winrt.windows.data.xml.dom import XmlDocument  # noqa: F401
+    from winrt.windows.ui.notifications import ToastNotificationManager  # noqa: F401
+    from win32com.shell import shell  # noqa: F401
+    import win32com.client  # noqa: F401
+    assert ICON_FILE.exists() and (APP_DIR / "ReCollect.png").exists() and (APP_DIR / "CHANGELOG.md").exists()
 
 
 def _already_running():
@@ -992,10 +1101,19 @@ def _already_running():
 
 
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        try:
+            _selftest()
+        except BaseException as e:
+            (Path(tempfile.gettempdir()) / "recollect-selftest.txt").write_text(repr(e), encoding="utf-8")
+            os._exit(1)
+        os._exit(0)
     if "--after" in sys.argv:
         _wait_for(int(sys.argv[sys.argv.index("--after") + 1]))
     if _already_running():
         raise SystemExit
+    if updater.FROZEN:
+        _first_start_of_exe()
     _own_taskbar_entry()
     _dpi_aware()
     root = tk.Tk()

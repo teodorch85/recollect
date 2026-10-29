@@ -5,3 +5,7 @@ __pycache__/
 settings.json
 empty_bed.png
 ReCollect.lnk
+# PyInstaller
+build/
+dist/
+*.spec

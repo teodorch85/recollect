@@ -10,6 +10,7 @@ from tkinter import messagebox, ttk
 import enhance
 import notify
 import organizer
+import updater
 from version import __version__
 
 SIDEBAR, PAGE, CARD, BORDER = "#F3F3F3", "#FAFAFA", "#FFFFFF", "#E5E5E5"
@@ -216,8 +217,10 @@ class SettingsWindow:
     def _page_updates(self):
         a = self.app
         card = self._card()
-        self._row(card, "Check for updates", "Look for a newer version in the ReCollect folder every minute and "
-                                             "offer to restart.", self._switch(a.updates_var))
+        where = ("Look for a new version on GitHub every few hours and offer to install it."
+                 if updater.FROZEN else "Look for a newer version in the ReCollect folder every minute and "
+                                        "offer to restart.")
+        self._row(card, "Check for updates", where, self._switch(a.updates_var))
         self.update_result = tk.StringVar()
         self._row(card, f"Version {__version__}", "The version running now.",
                   self._buttons(("Check now", self._check_now), ("What's new", a._whats_new)))
@@ -227,7 +230,8 @@ class SettingsWindow:
         a = self.app
         card = self._card()
         self._row(card, "ReCollect", f"Version {__version__}. Scan, sort and keep your printed photos.")
-        self._row(card, "App folder", str(a.app_dir), self._button("Open", lambda: os.startfile(a.app_dir)))
+        folder = updater.INSTALL_DIR or a.app_dir
+        self._row(card, "App folder", str(folder), self._button("Open", lambda: os.startfile(folder)))
         card = self._card("Reset")
         self._row(card, "Restore defaults", "Scanning, image, notification and update settings go back to how "
                                             "they came. Your photos folder and batch label stay.",
@@ -271,9 +275,12 @@ class SettingsWindow:
         os.startfile("ms-settings:notifications")
 
     def _check_now(self):
-        new = self.app.check_update_now()
-        self.update_result.set(f"ReCollect {new} is ready: use Restart now in the main window." if new else
-                               "You're up to date.")
+        self.update_result.set("Checking…")
+        self.win.update_idletasks()
+        new, problem = self.app.check_update_now()
+        button = "Update now" if updater.FROZEN else "Restart now"
+        self.update_result.set(problem or (f"ReCollect {new} is available: press {button} in the main window."
+                                           if new else "You're up to date."))
 
     def _restore(self):
         if messagebox.askyesno("Restore defaults", "Put scanning, image, notification and update settings back "
