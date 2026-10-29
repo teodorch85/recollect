@@ -33,6 +33,7 @@ import enhance
 import notify
 import ocr
 import organizer
+import namer
 import rotate
 import settings_window
 import updater
@@ -254,11 +255,13 @@ class App:
         ttk.Combobox(org, textvariable=self.fix_month_var, values=MONTHS, width=5,
                      state="readonly").grid(row=1, column=2, padx=4)
         ttk.Button(org, text="Apply", command=self._set_year).grid(row=1, column=3)
+        ttk.Button(org, text="Rename batch…", command=self.rename_batch).grid(row=2, column=0, columnspan=4,
+                                                                            sticky="we", pady=(4, 0))
         links = ttk.Frame(org)
-        links.grid(row=2, column=0, columnspan=4, sticky="we", pady=(6, 0))
+        links.grid(row=3, column=0, columnspan=4, sticky="we", pady=(6, 0))
         ttk.Button(links, text="Open photos folder", command=self._open_folder).pack(side="left", fill="x", expand=True)
         ttk.Button(links, text="Open catalog (Excel)", command=self._open_catalog).pack(side="left", fill="x", expand=True, padx=(4, 0))
-        ttk.Button(org, text="Find duplicates…", command=self.find_duplicates).grid(row=3, column=0, columnspan=4, sticky="we", pady=(4, 0))
+        ttk.Button(org, text="Find duplicates…", command=self.find_duplicates).grid(row=4, column=0, columnspan=4, sticky="we", pady=(4, 0))
         org.columnconfigure(0, weight=1)
 
         # scanning controls at the bottom of the column, next to the preview they act on
@@ -431,6 +434,28 @@ class App:
 
     def _fill_batches(self):
         self.fix_batch["values"] = organizer.batches(self._catalog())
+
+    def rename_batch(self):
+        batch = self.fix_batch_var.get().strip()
+        if batch not in organizer.batches(self._catalog()):
+            messagebox.showinfo("Rename batch", "First pick the batch to rename in the list above.")
+            return
+        if self.busy:
+            messagebox.showinfo("Rename batch", "Wait for the current job to finish first.")
+            return
+        RenameBatch(self, batch)
+
+    def _renamed(self, old, new):
+        cat = self._catalog()
+        moved = organizer.rename_batch(cat, old, new)
+        self.fix_batch_var.set(new)
+        label = ""
+        if self.batch_var.get().strip() == old:  # the next scans join the renamed batch
+            self.batch_var.set(new)
+            label = " The batch label for new scans was changed too."
+        self.status.set(" ".join(t for t in (f"Batch “{old}” is now “{new}”: {moved} photo(s) moved.{label}",
+                                             organizer.problem_text()) if t))
+        self._refresh()
 
     def _show_batch_date(self):
         """Fill in the year and month already set for the chosen batch."""
@@ -986,6 +1011,83 @@ class App:
         f = to_dpi / from_dpi
         (cx, cy), (w, h), a = rect
         return (cx * f, cy * f), (w * f, h * f), a
+
+
+class RenameBatch:
+    """Small window: type a new name for a batch, or let Claude suggest one from its photos."""
+
+    def __init__(self, app, batch):
+        self.app, self.batch = app, batch
+        self.win = tk.Toplevel(app.root)
+        self.win.title("Rename batch")
+        self.win.transient(app.root)
+        self.win.resizable(False, False)
+        box = ttk.Frame(self.win, padding=12)
+        box.pack(fill="both")
+        ttk.Label(box, text=f"New name for “{batch}”:").pack(anchor="w")
+        self.name = tk.StringVar(value=batch)
+        entry = ttk.Entry(box, textvariable=self.name, width=40)
+        entry.pack(fill="x", pady=(4, 0))
+        entry.focus_set()
+        entry.select_range(0, "end")
+        self.note = tk.StringVar(value="Folders, file names and tags follow the new name. "
+                                       "An existing batch's name merges the two.")
+        ttk.Label(box, textvariable=self.note, foreground="#666", wraplength=int(380 * app.ui),
+                  justify="left").pack(anchor="w", pady=(6, 0))
+        row = ttk.Frame(box)
+        row.pack(fill="x", pady=(10, 0))
+        self.suggest_btn = ttk.Button(row, text="Suggest with Claude", command=self._suggest)
+        self.suggest_btn.pack(side="left")
+        ttk.Button(row, text="Cancel", command=self.win.destroy).pack(side="right")
+        ttk.Button(row, text="Rename", command=self._ok).pack(side="right", padx=4)
+        self.win.bind("<Return>", lambda e: self._ok())
+        self.win.bind("<Escape>", lambda e: self.win.destroy())
+        self._answer = None
+
+    def _ok(self):
+        new = re.sub(r"\s+", " ", self.name.get()).strip()
+        if not new or new == self.batch:
+            self.win.destroy()
+            return
+        self.win.destroy()
+        self.app._renamed(self.batch, new)
+
+    def _suggest(self):
+        key = rotate.get_key()
+        if not key:
+            self.note.set("Suggestions need an Anthropic API key: add it in Settings ▸ Image.")
+            return
+        rows = [r for r in self.app._catalog().rows("status IN ('ready', 'filed', 'scanning')")
+                if r.get("batch") == self.batch]
+        step = max(1, len(rows) // namer.MAX_PHOTOS)  # spread over the batch
+        picks = rows[::step][:namer.MAX_PHOTOS]
+        backs = [r.get("back_text") for r in rows if r.get("back_text")][:30]
+        self.suggest_btn.config(state="disabled")
+        self.note.set(f"Asking Claude about {len(picks)} photo(s)…")
+
+        def work():
+            try:
+                photos = [img for img in (self.app._load_photo(r["id"]) for r in picks) if img is not None]
+                self._answer = namer.suggest(key, self.batch, photos, backs)
+            except Exception as e:  # shown in the window, never fatal
+                self._answer = e
+        threading.Thread(target=work, daemon=True).start()
+        self.win.after(200, self._wait)
+
+    def _wait(self):
+        if not self.win.winfo_exists():
+            return
+        if self._answer is None:
+            self.win.after(200, self._wait)
+            return
+        answer, self._answer = self._answer, None
+        self.suggest_btn.config(state="normal")
+        if isinstance(answer, Exception):
+            self.note.set(f"No suggestion: {answer}")
+            return
+        name, reason = answer
+        self.name.set(name)
+        self.note.set(f"Claude suggests this ({reason}). Edit it if you like, then press Rename.")
 
 
 class DuplicateReview:

@@ -282,6 +282,15 @@ def batches(catalog):
             "SELECT DISTINCT batch FROM photos WHERE batch IS NOT NULL AND batch != '' ORDER BY batch")]
 
 
+def rename_batch(catalog, old, new):
+    """Give every photo of batch `old` the name `new` (an existing batch's name merges the two), then
+    refile them: folders, file names and the Batch tag follow. Returns the number of photos moved."""
+    with catalog.lock:
+        catalog.db.execute("UPDATE photos SET batch = ? WHERE batch = ?", (new, old))
+        catalog.db.commit()
+    return organize(catalog)
+
+
 def set_batch_year(catalog, batch, year, month=None):
     """Give every photo of a batch a year, and optionally a month 1-12 (empty year = back to the
     automatic rules)."""
