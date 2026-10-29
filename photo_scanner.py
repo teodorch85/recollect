@@ -52,6 +52,7 @@ JOB_TITLES = {"_do_fronts": "Fronts scanned", "_do_backs": "Backs read, photos f
 SCANNER_JOBS = ("_do_fronts", "_do_backs", "_do_preview", "_do_calibrate")
 UPDATE_CHECK_MS = 60_000  # how often to look for a newer version in this folder (from source)
 ONLINE_CHECK_S = 6 * 3600  # how often ReCollect.exe asks GitHub for a new release
+MONTHS = ["—", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 PREVIEW_DPI = 150  # quick look at the bed: about 10 s, enough to find the prints
 
 
@@ -242,18 +243,22 @@ class App:
 
         org = ttk.LabelFrame(side, text="Organize  (folders: Year / Batch)", padding=6)
         org.pack(fill="x", pady=(6, 0))
-        ttk.Label(org, text="Set year for batch:").grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(org, text="Set year and month for batch:").grid(row=0, column=0, columnspan=4, sticky="w")
         self.fix_batch_var = tk.StringVar()
         self.fix_batch = ttk.Combobox(org, textvariable=self.fix_batch_var, postcommand=self._fill_batches)
         self.fix_batch.grid(row=1, column=0, sticky="we")
+        self.fix_batch.bind("<<ComboboxSelected>>", lambda e: self._show_batch_date())
         self.fix_year_var = tk.StringVar()
-        ttk.Entry(org, textvariable=self.fix_year_var, width=6).grid(row=1, column=1, padx=4)
-        ttk.Button(org, text="Apply", command=self._set_year).grid(row=1, column=2)
+        ttk.Entry(org, textvariable=self.fix_year_var, width=6).grid(row=1, column=1, padx=(4, 0))
+        self.fix_month_var = tk.StringVar(value=MONTHS[0])
+        ttk.Combobox(org, textvariable=self.fix_month_var, values=MONTHS, width=5,
+                     state="readonly").grid(row=1, column=2, padx=4)
+        ttk.Button(org, text="Apply", command=self._set_year).grid(row=1, column=3)
         links = ttk.Frame(org)
-        links.grid(row=2, column=0, columnspan=3, sticky="we", pady=(6, 0))
+        links.grid(row=2, column=0, columnspan=4, sticky="we", pady=(6, 0))
         ttk.Button(links, text="Open photos folder", command=self._open_folder).pack(side="left", fill="x", expand=True)
         ttk.Button(links, text="Open catalog (Excel)", command=self._open_catalog).pack(side="left", fill="x", expand=True, padx=(4, 0))
-        ttk.Button(org, text="Find duplicates…", command=self.find_duplicates).grid(row=3, column=0, columnspan=3, sticky="we", pady=(4, 0))
+        ttk.Button(org, text="Find duplicates…", command=self.find_duplicates).grid(row=3, column=0, columnspan=4, sticky="we", pady=(4, 0))
         org.columnconfigure(0, weight=1)
 
         # scanning controls at the bottom of the column, next to the preview they act on
@@ -398,6 +403,8 @@ class App:
         root = self._root()
         if self._cat is None or self._cat.root != root:
             self._cat = organizer.Catalog(root)
+            if organizer.finish_unfinished(self._cat, keep={p["id"] for p in self.bed}):
+                organizer.organize(self._cat)  # file them now, without backs
         return self._cat
 
     def _ext(self):
@@ -419,18 +426,33 @@ class App:
         organizer.organize(cat)
         rows = [r for r in cat.rows() if r["id"] in ids]
         places = sorted({str(Path(r["path"]).parent) for r in rows})
-        return "Filed into " + ", ".join(places) if places else ""
+        summary = "Filed into " + ", ".join(places) if places else ""
+        return " ".join(t for t in (summary, organizer.problem_text()) if t)
 
     def _fill_batches(self):
         self.fix_batch["values"] = organizer.batches(self._catalog())
 
+    def _show_batch_date(self):
+        """Fill in the year and month already set for the chosen batch."""
+        year, month = organizer.batch_date(self._catalog(), self.fix_batch_var.get().strip())
+        self.fix_year_var.set(year)
+        self.fix_month_var.set(MONTHS[int(month)] if month else MONTHS[0])
+
     def _set_year(self):
         batch, year = self.fix_batch_var.get().strip(), self.fix_year_var.get().strip()
-        if not batch or (year and not re.fullmatch(r"(19|20)\d\d", year)):
-            messagebox.showinfo("Set year", "Pick a batch and type a year like 1994 (empty = automatic).")
+        month = MONTHS.index(self.fix_month_var.get()) or None  # 0 = no month
+        if not batch or (year and not re.fullmatch(r"(19|20)\d\d", year)) or (month and not year):
+            messagebox.showinfo("Set year", "Pick a batch and type a year like 1994; the month is optional "
+                                            "(empty year = automatic).")
             return
-        moved = organizer.set_batch_year(self._catalog(), batch, year)
-        self.status.set(f"Batch “{batch}” → {year or 'automatic year'}: {moved} photo(s) moved.")
+        cat = self._catalog()
+        moved = organizer.set_batch_year(cat, batch, year, month)
+        when = f"{self.fix_month_var.get()} {year}" if month else year
+        waiting = len([r for r in cat.rows("status = 'scanning'") if r["batch"] == batch])
+        self.status.set(" ".join(t for t in (
+            f"Batch “{batch}” → {when or 'automatic year'}: {moved} photo(s) moved.",
+            f"{waiting} still wait for their backs on the glass and move once those are scanned or skipped."
+            if waiting else "", organizer.problem_text()) if t))
         self._refresh()
 
     def _open_folder(self):
