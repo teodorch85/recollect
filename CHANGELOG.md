@@ -3,6 +3,20 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.4.0 — unreleased (beta)
+- A notification when a job finishes (the usual Windows popup in the corner, gone after about
+  5 seconds) and a flashing taskbar button if ReCollect isn't in front, so you can wait away
+  from the screen. Without Windows notifications, a small popup of ReCollect's own is shown.
+- Cancel button [Esc]: stops a scan at the next safe point and keeps nothing from it. Cancelled
+  fronts are deleted; cancelled backs leave the prints waiting for their backs.
+- Progress bar for scans (an estimate: the V600 reports no progress) and for the duplicate check.
+- Clearer Preview: says nothing was saved, one line per problem, what to do next, and that a
+  15×20 print fits only one per scan.
+- Update prompt: when a newer version lands in the folder, a banner offers Restart now, What's
+  new or Later; restarting waits until no job or bed is in progress. Only one ReCollect runs at
+  a time: starting it again brings the open window to the front.
+- For the Windows notifications, run `.venv\Scripts\pip install -r requirements.txt` once.
+
 ## 1.3.1 — 2026-10-29
 - Prints lying back-side down are recognised (white paper with almost no picture): Preview says
   which ones to turn over, and a front scan refuses to save them instead of filing blank paper.
