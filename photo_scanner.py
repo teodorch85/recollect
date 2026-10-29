@@ -32,6 +32,7 @@ import enhance
 import notify
 import ocr
 import organizer
+import settings_window
 from version import __version__
 from scanner import ScannerError, scan_bed
 
@@ -62,6 +63,9 @@ DEFAULTS = {
     "restore_color": True,
     "scan_backs": True,
     "batch": "",
+    "notify": True,         # popup when a job finishes
+    "flash": True,          # flash the taskbar button when the window isn't in front
+    "check_updates": True,
 }
 
 
@@ -114,6 +118,8 @@ class App:
         self._cat = None
         self.restart_requested = False
         self._offered = None  # version already offered, so it is announced once
+        self.app_dir = APP_DIR
+        self._settings_win = None
 
         root.title(f"ReCollect {__version__}")
         root.iconbitmap(default=str(ICON_FILE))  # window, title bar and taskbar
@@ -122,6 +128,7 @@ class App:
         width, height = min(int(1150 * self.ui), w - 20), h - 50  # fit above the taskbar
         root.geometry(f"{width}x{height}+{x + (w - width) // 2}+{y + 10}")
         root.minsize(int(760 * self.ui), int(720 * self.ui))  # room for the whole left column
+        self._make_vars()
         self._build_ui()
         self._save_settings()  # drops settings this version no longer uses (e.g. an old API key)
         root.bind("<space>", lambda e: self._space(e))
@@ -130,6 +137,7 @@ class App:
         root.bind("<p>", lambda e: self._key_preview(e))
         root.bind("<P>", lambda e: self._key_preview(e))
         root.bind("<Escape>", lambda e: self.cancel())
+        root.bind("<Control-comma>", lambda e: self.open_settings())
         root.after(100, self._poll)
         root.after(UPDATE_CHECK_MS, self._check_update)
         self._refresh()
@@ -137,6 +145,50 @@ class App:
             root.after(300, self._ask_calibrate)
 
     # ---------- UI ----------
+    def _make_vars(self):
+        """Settings as Tk variables, shared by the main window and the Settings window; saved on every change."""
+        s = self.s
+        self.out_var = tk.StringVar(value=s["output"])
+        self.batch_var = tk.StringVar(value=s["batch"])
+        self.dpi_var = tk.IntVar(value=s["front_dpi"])
+        self.back_dpi_var = tk.IntVar(value=s["back_dpi"])
+        self.sharpen_var = tk.StringVar(value=s["sharpen"])
+        self.fmt_var = tk.StringVar(value=s["format"])
+        self.quality_var = tk.IntVar(value=s["jpeg_quality"])
+        self.restore_var = tk.BooleanVar(value=s["restore_color"])
+        self.backs_var = tk.BooleanVar(value=s["scan_backs"])
+        self.notify_var = tk.BooleanVar(value=s["notify"])
+        self.flash_var = tk.BooleanVar(value=s["flash"])
+        self.updates_var = tk.BooleanVar(value=s["check_updates"])
+        for var in (self.out_var, self.dpi_var, self.back_dpi_var, self.sharpen_var, self.fmt_var,
+                    self.quality_var, self.restore_var, self.backs_var, self.notify_var, self.flash_var,
+                    self.updates_var):
+            var.trace_add("write", lambda *a: self._settings_changed())
+
+    def _settings_changed(self):
+        if not hasattr(self, "summary_var"):
+            return  # still building the window
+        self._save_settings()
+        fmt = "TIFF" if self.fmt_var.get() == "TIFF" else f"JPEG {self.quality_var.get()}"
+        backs = f", backs {self.back_dpi_var.get()} dpi" if self.backs_var.get() else ", no backs"
+        self.summary_var.set(f"Fronts {self.dpi_var.get()} dpi{backs}, {fmt}.\nSaving to {self.out_var.get()}")
+
+    def open_settings(self):
+        if self._settings_win and self._settings_win.win.winfo_exists():
+            self._settings_win.win.lift()
+            self._settings_win.win.focus_force()
+        else:
+            self._settings_win = settings_window.SettingsWindow(self)
+
+    def restore_defaults(self):
+        """Back to DEFAULTS, except where photos go and the batch being scanned."""
+        for var, key in ((self.dpi_var, "front_dpi"), (self.back_dpi_var, "back_dpi"), (self.sharpen_var, "sharpen"),
+                         (self.fmt_var, "format"), (self.quality_var, "jpeg_quality"),
+                         (self.restore_var, "restore_color"), (self.backs_var, "scan_backs"),
+                         (self.notify_var, "notify"), (self.flash_var, "flash"), (self.updates_var, "check_updates")):
+            var.set(DEFAULTS[key])
+        self._backs_toggled()
+
     def _build_ui(self):
         # left: a column of settings and buttons; right: the bed preview, filling the rest
         side = ttk.Frame(self.root, padding=(8, 8, 4, 8), width=int(390 * self.ui))
@@ -153,40 +205,22 @@ class App:
         ttk.Button(row, text="What's new", command=self._whats_new).pack(side="left", padx=4)
         ttk.Button(row, text="Later", command=self.update_box.pack_forget).pack(side="left")
 
-        files = ttk.LabelFrame(side, text="Photos", padding=6)
+        files = ttk.LabelFrame(side, text="This batch", padding=6)
         files.pack(fill="x")
         self._first_box = files
-        ttk.Label(files, text="Save to:").grid(row=0, column=0, columnspan=2, sticky="w")
-        self.out_var = tk.StringVar(value=self.s["output"])
-        ttk.Entry(files, textvariable=self.out_var).grid(row=1, column=0, sticky="we")
-        ttk.Button(files, text="Browse…", command=self._browse).grid(row=1, column=1, padx=(4, 0))
-        ttk.Label(files, text="Batch / box label:").grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        self.batch_var = tk.StringVar(value=self.s["batch"])
-        ttk.Entry(files, textvariable=self.batch_var).grid(row=3, column=0, columnspan=2, sticky="we")
+        ttk.Label(files, text="Batch / box label:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(files, textvariable=self.batch_var).grid(row=1, column=0, sticky="we")
         ttk.Label(files, text="tip: put the year in it, e.g. “1994 Crete”",
-                  foreground="#666").grid(row=4, column=0, columnspan=2, sticky="w")
+                  foreground="#666").grid(row=2, column=0, sticky="w")
+        ttk.Checkbutton(files, text="Scan backs", variable=self.backs_var,
+                        command=self._backs_toggled).grid(row=3, column=0, sticky="w", pady=(4, 0))
+        self.summary_var = tk.StringVar()
+        ttk.Label(files, textvariable=self.summary_var, foreground="#666", wraplength=int(350 * self.ui),
+                  justify="left").grid(row=4, column=0, sticky="w", pady=(4, 0))
+        ttk.Button(files, text="⚙  Settings…  [Ctrl+,]", command=self.open_settings).grid(
+            row=5, column=0, sticky="we", pady=(6, 0))
         files.columnconfigure(0, weight=1)
-
-        opts = ttk.LabelFrame(side, text="Scan settings", padding=6)
-        opts.pack(fill="x", pady=(6, 0))
-        self.dpi_var = tk.IntVar(value=self.s["front_dpi"])
-        self.sharpen_var = tk.StringVar(value=self.s["sharpen"])
-        self.fmt_var = tk.StringVar(value=self.s["format"])
-        self.quality_var = tk.IntVar(value=self.s["jpeg_quality"])
-        for row, (label, var, values) in enumerate((
-                ("Resolution (dpi):", self.dpi_var, [300, 600, 800, 1200]),
-                ("Unsharp mask:", self.sharpen_var, list(enhance.SHARPEN_LEVELS)),
-                ("Format:", self.fmt_var, ["JPEG", "TIFF"]),
-                ("JPEG quality:", self.quality_var, [90, 95, 100]))):
-            ttk.Label(opts, text=label).grid(row=row, column=0, sticky="w", pady=2)
-            ttk.Combobox(opts, textvariable=var, values=values, width=8,
-                         state="readonly").grid(row=row, column=1, sticky="w", padx=(6, 0), pady=2)
-        self.restore_var = tk.BooleanVar(value=self.s["restore_color"])
-        ttk.Checkbutton(opts, text="Color restoration", variable=self.restore_var).grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        self.backs_var = tk.BooleanVar(value=self.s["scan_backs"])
-        ttk.Checkbutton(opts, text="Scan backs", variable=self.backs_var,
-                        command=self._backs_toggled).grid(row=5, column=0, columnspan=2, sticky="w")
-        ttk.Button(opts, text="Calibrate empty bed", command=self.calibrate).grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self._settings_changed()
 
         org = ttk.LabelFrame(side, text="Organize  (folders: Year / Batch)", padding=6)
         org.pack(fill="x", pady=(6, 0))
@@ -270,10 +304,18 @@ class App:
             self.skip_backs()
 
     def _browse(self):
-        d = filedialog.askdirectory(initialdir=self.out_var.get())
+        if self.busy or self.state == "back":  # the prints on the glass belong to the current folder
+            messagebox.showinfo("Photos folder", "Finish the prints on the glass first (scan or skip their backs), "
+                                                 "then change the folder.", parent=self._settings_parent())
+            return
+        d = filedialog.askdirectory(initialdir=self.out_var.get(), parent=self._settings_parent())
         if d:
             self.out_var.set(d)
             self._refresh()
+
+    def _settings_parent(self):
+        win = self._settings_win and self._settings_win.win
+        return win if win and win.winfo_exists() else self.root
 
     def _backs_toggled(self):
         if not self.backs_var.get() and self.state == "back":
@@ -383,9 +425,11 @@ class App:
 
     def _save_settings(self):
         self.s.update(output=self.out_var.get(), front_dpi=int(self.dpi_var.get()), format=self.fmt_var.get(),
-                      jpeg_quality=int(self.quality_var.get()), sharpen=self.sharpen_var.get(),
-                      restore_color=bool(self.restore_var.get()),
-                      scan_backs=bool(self.backs_var.get()), batch=self.batch_var.get())
+                      back_dpi=int(self.back_dpi_var.get()), jpeg_quality=int(self.quality_var.get()),
+                      sharpen=self.sharpen_var.get(), restore_color=bool(self.restore_var.get()),
+                      scan_backs=bool(self.backs_var.get()), batch=self.batch_var.get(),
+                      notify=bool(self.notify_var.get()), flash=bool(self.flash_var.get()),
+                      check_updates=bool(self.updates_var.get()))
         try:
             SETTINGS_FILE.write_text(json.dumps(self.s, indent=2), encoding="utf-8")
         except OSError:
@@ -413,12 +457,24 @@ class App:
 
     def _check_update(self):
         new = disk_version()
-        if new and new != self._offered and _newer(new, __version__):
-            self._offered = new
-            self.update_text.set(f"ReCollect {new} is ready. Restart to use it (you're on {__version__}).")
-            self.update_box.pack(fill="x", pady=(0, 6), before=self._first_box)
-            self._notify("Update ready", f"ReCollect {new} is ready. Restart it when convenient.")
+        if self.updates_var.get() and new and new != self._offered and _newer(new, __version__):
+            self._offer(new)  # once per version, so Later keeps the banner away
         self.root.after(UPDATE_CHECK_MS, self._check_update)
+
+    def check_update_now(self):
+        """Settings > Check now: show the banner if a newer version is in the folder; returns it or None."""
+        new = disk_version()
+        if new and _newer(new, __version__):
+            self._offer(new)
+            return new
+        return None
+
+    def _offer(self, new):
+        self.update_text.set(f"ReCollect {new} is ready. Restart to use it (you're on {__version__}).")
+        self.update_box.pack(fill="x", pady=(0, 6), before=self._first_box)
+        if new != self._offered:
+            self._offered = new
+            self._notify("Update ready", f"ReCollect {new} is ready. Restart it when convenient.")
 
     def _whats_new(self):
         try:
@@ -427,8 +483,10 @@ class App:
             subprocess.Popen(["notepad.exe", str(APP_DIR / "CHANGELOG.md")])
 
     def _notify(self, title, text):
+        if not (self.notify_var.get() or self.flash_var.get()):
+            return
         try:
-            notify.job_done(self.root, title, text)
+            notify.job_done(self.root, title, text, popup=self.notify_var.get(), flash_taskbar=self.flash_var.get())
         except Exception:  # a notification must never stop the app
             pass
 

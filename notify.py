@@ -12,6 +12,7 @@ from xml.sax.saxutils import escape
 APP_ID = "ReCollect.PhotoScans"  # same as install_shortcuts.APP_ID
 LOGO = Path(__file__).resolve().parent / "ReCollect.png"
 POPUP_MS = 5000
+last_error = None  # why the last Windows notification couldn't be shown (None: it was handed to Windows)
 
 
 class _FlashInfo(ctypes.Structure):
@@ -54,13 +55,18 @@ def _popup(root, title, text):
     win.after(POPUP_MS, win.destroy)
 
 
-def job_done(root, title, text):
+def job_done(root, title, text, popup=True, flash_taskbar=True):
     """Popup in the corner (about 5 s) and, if the app isn't in front, a flashing taskbar button."""
+    global last_error
     hwnd = ctypes.windll.user32.GetParent(root.winfo_id()) or root.winfo_id()  # Tk's real top-level window
-    if ctypes.windll.user32.GetForegroundWindow() != hwnd:
+    if flash_taskbar and ctypes.windll.user32.GetForegroundWindow() != hwnd:
         flash(hwnd)
+    if not popup:
+        return
     text = text if len(text) <= 180 else text[:177] + "…"
     try:
         _toast(title, text)
-    except Exception:  # notifications off, or the Start menu shortcut is missing
+        last_error = None
+    except Exception as e:  # notifications off, or the Start menu shortcut is missing
+        last_error = e
         _popup(root, title, text)

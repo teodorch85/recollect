@@ -3,6 +3,15 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.5.0 — unreleased (beta)
+- Settings window [Ctrl+,]: sections on the left (Library, Scanning, Image, Notifications,
+  Updates, About), each setting with a short explanation; changes are saved at once.
+- New settings: back resolution, notifications and taskbar flashing on/off, update checks on/off.
+- Notifications page: send a test notification and open the Windows notification settings.
+- Updates page: Check now. About page: Restore defaults.
+- The main column is shorter: batch label, Scan backs, a one-line summary of the scan settings,
+  and the Settings button. The photos folder can't be changed while prints wait for their backs.
+
 ## 1.4.0 — 2026-10-29
 - A notification when a job finishes (the usual Windows popup in the corner, gone after about
   5 seconds) and a flashing taskbar button if ReCollect isn't in front, so you can wait away
