@@ -3,6 +3,16 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.9.0 — 2026-10-29
+- Month for a batch: Organize ▸ Set year and month for batch. The month goes into the photos'
+  date taken (Immich sorts them by it) and their file names (1994-07_…); folders stay Year / Batch.
+  Choosing a batch shows the year and month already set for it.
+- Fixed: setting a year sometimes left photos where they were, without a word. Photos left
+  half-finished when ReCollect closed while their bed waited for its backs are now filed (without
+  backs) on the next start, and a photo that can't be moved, e.g. because it's open in a viewer,
+  is named in the status line instead of being skipped silently. A photo whose info can't be
+  written is still moved.
+
 ## 1.8.0 — 2026-10-29
 - Auto-rotate (Settings ▸ Image): Claude looks at each new front scan and turns sideways or
   upside-down photos the right way up before they are saved, so the camera-date reader and the

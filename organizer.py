@@ -194,7 +194,9 @@ class Catalog:
 
 def _write_metadata(path, row, year, source):
     # the most exact date that agrees with the chosen year
-    dates = [find_date(row.get("back_text")), row.get("date_stamp"), str(year) if year else None]
+    month = manual_month(row) if source == "set by you" else None
+    dates = [find_date(row.get("back_text")), row.get("date_stamp"), f"{year}-{month}" if month else None,
+             str(year) if year else None]
     date = next((d for d in dates if d and year and d.startswith(str(year))), None)
     values = {"Batch": row.get("batch"), "Paper": row.get("paper"), "Print size": row.get("print_format")}
     tags = [f"{k}/{v.replace('/', '-')}" for k, v in values.items() if v]
@@ -240,8 +242,8 @@ def _stamp_year(r):
 
 def _decide_year(r, written, stamped):
     """(year, source) by the rules at the top; written/stamped: group -> year from _years_by_group."""
-    if (r.get("year_manual") or "").isdigit():
-        return int(r["year_manual"]), "set by you"
+    if (r.get("year_manual") or "")[:4].isdigit():  # "1994", or "1994-07" with a month
+        return int(r["year_manual"][:4]), "set by you"
     for source, y in (("back", find_year(r.get("back_text") or "")), ("batch label", find_year(r.get("batch") or "")),
                       ("same batch", written.get(_group(r))), ("date stamp", _stamp_year(r)),
                       ("same batch", stamped.get(_group(r)))):
@@ -250,18 +252,65 @@ def _decide_year(r, written, stamped):
     return None, ""
 
 
+def manual_month(r):
+    """'07' if you set a month for the photo's batch, else None."""
+    m = re.fullmatch(r"\d{4}-(\d\d)", r.get("year_manual") or "")
+    return m.group(1) if m else None
+
+
+def batch_date(catalog, batch):
+    """(year, month) set by you for a batch, as strings ('' when not set)."""
+    with catalog.lock:
+        row = catalog.db.execute("SELECT year_manual FROM photos WHERE batch = ? AND year_manual IS NOT NULL "
+                                 "AND year_manual != '' LIMIT 1", (batch,)).fetchone()
+    value = row[0] if row else ""
+    return value[:4], value[5:7]
+
+
+def problem_text():
+    """One line about what the last organize() couldn't do, or ''."""
+    if not problems:
+        return ""
+    pid, why = problems[0]
+    more = f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""
+    return f"⚠ Photo {pid}{more}: {why}."
+
+
 def batches(catalog):
     with catalog.lock:
         return [r[0] for r in catalog.db.execute(
             "SELECT DISTINCT batch FROM photos WHERE batch IS NOT NULL AND batch != '' ORDER BY batch")]
 
 
-def set_batch_year(catalog, batch, year):
-    """Give every photo of a batch a year (empty year = back to the automatic rules)."""
+def set_batch_year(catalog, batch, year, month=None):
+    """Give every photo of a batch a year, and optionally a month 1-12 (empty year = back to the
+    automatic rules)."""
+    value = f"{year}-{int(month):02d}" if year and month else str(year or "")
     with catalog.lock:
-        catalog.db.execute("UPDATE photos SET year_manual = ? WHERE batch = ?", (str(year or ""), batch))
+        catalog.db.execute("UPDATE photos SET year_manual = ? WHERE batch = ?", (value, batch))
         catalog.db.commit()
     return organize(catalog)
+
+
+problems = []  # (photo id, why) for what the last organize() couldn't do; it retries them next time
+
+
+def finish_unfinished(catalog, keep=()):
+    """Photos left 'scanning' because ReCollect closed while their bed waited for its backs: file them
+    without backs. `keep`: ids of the bed on the glass now. Returns how many."""
+    stuck = [r for r in catalog.rows("status = 'scanning'") if r["id"] not in keep]
+    for r in stuck:
+        catalog.upsert(r["id"], status="ready",
+                       back_status="not scanned" if r.get("back_status") == "pending" else r.get("back_status"))
+    return len(stuck)
+
+
+def _why(e):
+    if isinstance(e, PermissionError):
+        return "it is open in another program (close it and try again)"
+    if isinstance(e, FileExistsError):
+        return "a file with its new name is already there"
+    return f"{type(e).__name__}: {e}"
 
 
 def organize(catalog):
@@ -271,6 +320,7 @@ def organize(catalog):
     rows = catalog.rows("status IN ('ready', 'filed')")
     written, stamped = _years_by_group(rows, _written_year), _years_by_group(rows, _stamp_year)
     moved = changed = 0
+    problems.clear()
     for r in rows:
         year, source = _decide_year(r, written, stamped)
         # the year already names the parent folder: "1988 Crete" -> 1988/Crete
@@ -278,7 +328,8 @@ def organize(catalog):
         batch = re.sub(r"\s{2,}", " ", batch).strip(" -_") or "Unsorted"
         dest = root / (str(year) if year else UNKNOWN) / batch
         snippet = slug(r.get("back_text") or "", 40)
-        base = "_".join(p for p in (str(year) if year else "undated", slug(batch, 30), r["id"], snippet) if p)
+        when = f"{year}-{manual_month(r)}" if year and source == "set by you" and manual_month(r) else str(year or "")
+        base = "_".join(p for p in (when or "undated", slug(batch, 30), r["id"], snippet) if p)
         front = root / r["path"]
         new_front = dest / f"{base}{front.suffix.lower()}"
         back = root / r["back_path"] if r.get("back_path") else None
@@ -291,8 +342,13 @@ def organize(catalog):
             continue  # moved or deleted by hand; leave the row alone
         dest.mkdir(parents=True, exist_ok=True)
         cur_front, cur_back = front, back
-        try:  # os.rename: same drive, instant, and fails cleanly (no half copy) if a file is open
+        meta_ok = True
+        try:
             r["description"] = _write_metadata(front, r, year, source)
+        except (OSError, RuntimeError) as e:  # RuntimeError: exiv2 couldn't parse the file
+            meta_ok = False  # the move goes ahead; the metadata is retried next time
+            problems.append((r["id"], "its info couldn't be written into the file: " + _why(e)))
+        try:  # os.rename: same drive, instant, and fails cleanly (no half copy) if a file is open
             if new_front != front:
                 os.rename(front, new_front)
                 cur_front = new_front
@@ -301,14 +357,15 @@ def organize(catalog):
                 new_back.parent.mkdir(exist_ok=True)
                 os.rename(back, new_back)
                 cur_back = new_back
-        except (OSError, RuntimeError):  # RuntimeError: exiv2 couldn't parse the file
-            pass  # e.g. open in a viewer: what didn't move is retried on the next run
+        except OSError as e:  # e.g. open in a viewer: what didn't move is retried on the next run
+            problems.append((r["id"], "it couldn't be moved: " + _why(e)))
         done = cur_front == new_front and cur_back == new_back
         catalog.upsert(r["id"], status="filed" if done else r["status"],
                        year=str(year or "") if done else r.get("year"), year_source=source,
                        path=str(cur_front.relative_to(root)),
                        back_path=str(cur_back.relative_to(root)) if cur_back else "",
-                       organized=datetime.now().isoformat(timespec="seconds"), meta=META if done else r.get("meta"),
+                       organized=datetime.now().isoformat(timespec="seconds"),
+                       meta=META if done and meta_ok else r.get("meta"),
                        description=r.get("description"))
         moved += cur_front != front
         changed += 1
