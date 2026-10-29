@@ -37,11 +37,13 @@ INBOX, BACKS, UNKNOWN = "_inbox", "_backs", "Unknown year"
 # status: scanning (back step not done) -> ready -> filed
 FIELDS = ["id", "status", "batch", "scanned", "bed", "dpi", "size_cm", "print_format", "back_status",
           "back_text", "back_lab", "paper", "date_stamp", "year_manual", "year", "year_source", "path",
-          "back_path", "organized", "meta", "description", "fingerprint", "duplicate_of", "distinct_from"]
+          "back_path", "organized", "meta", "description", "fingerprint", "duplicate_of", "distinct_from",
+          "rotated", "orientation"]
 # description = what organize() last wrote as the photo's description (so it knows what it may clear)
 # fingerprint = duplicates.fingerprints() of the front; duplicate_of = id of the photo it repeats;
 # distinct_from = ids you marked "not a duplicate" of this one (space separated)
-META = "4"  # bump when the metadata written into photos changes, so organize() rewrites it everywhere
+# rotated = degrees the front was turned clockwise by auto-rotate; orientation = Claude's confidence: reason
+META = "5"  # bump when the metadata written into photos changes, so organize() rewrites it everywhere
 
 # Common print sizes in cm; the format hints at the era (e.g. 9x13 in the 70s-80s, 10x15 from the 90s).
 PRINT_FORMATS = [(9, 9), (9, 13), (10, 10), (10, 15), (11, 15), (13, 13), (13, 18), (15, 20), (15, 21),
@@ -202,6 +204,9 @@ def _write_metadata(path, row, year, source):
     if row.get("back_text"):
         tags.append("Back text")
         keywords.append("Back text")
+    if (row.get("orientation") or "").startswith("low"):  # auto-rotate found no clear up
+        tags.append("Check orientation")
+        keywords.append("Check orientation")
     if row.get("duplicate_of"):
         tags.append("Duplicate")
         keywords.append("Duplicate")
