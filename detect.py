@@ -335,8 +335,26 @@ def print_names(idx):
     return ("print " if len(nums) == 1 else "prints ") + (", ".join(nums[:-1]) + " and " + nums[-1] if len(nums) > 1 else nums[0])
 
 
-def draw_overlay(img, rects, labels=None, max_side=1400, alert=()):
-    """Small preview of the bed with numbered outlines, for the app window (alert: indices in red)."""
+def top_direction(rect, turn_cw=0):
+    """Unit vector, in bed coordinates, pointing to the top of the saved photo cut from `rect`
+    (crop() straightens by the rect's angle; the photo is then turned `turn_cw` degrees clockwise)."""
+    a = np.radians(rect[2])
+    t = np.radians(turn_cw % 360)
+    vx, vy = -np.sin(t), -np.cos(t)  # up in the crop's frame after turning (y points down)
+    return np.cos(a) * vx - np.sin(a) * vy, np.sin(a) * vx + np.cos(a) * vy  # back through crop()'s rotation
+
+
+def hit(rects, x, y):
+    """Index of the rect containing bed point (x, y), or None."""
+    for i, r in enumerate(rects):
+        if cv2.pointPolygonTest(cv2.boxPoints(r).astype(np.float32), (float(x), float(y)), False) >= 0:
+            return i
+    return None
+
+
+def draw_overlay(img, rects, labels=None, max_side=1400, alert=(), ups=None):
+    """Small preview of the bed with numbered outlines, for the app window (alert: indices in red;
+    ups: per rect, the direction of the photo's top, drawn as an arrow)."""
     f = max_side / max(img.shape[:2])
     view = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
     for i, r in enumerate(rects):
@@ -347,4 +365,11 @@ def draw_overlay(img, rects, labels=None, max_side=1400, alert=()):
         org = (int(cx * f) - 20, int(cy * f) + 12)
         cv2.putText(view, text, org, cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 0), 6, cv2.LINE_AA)
         cv2.putText(view, text, org, cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 200, 255), 2, cv2.LINE_AA)
+        if ups:
+            ux, uy = ups[i]
+            n = 0.32 * min(w, h) * f
+            start = (int(cx * f - ux * n * 0.2), int(cy * f - uy * n * 0.2) - 30)
+            end = (int(cx * f + ux * n), int(cy * f + uy * n) - 30)
+            cv2.arrowedLine(view, start, end, (0, 0, 0), 9, cv2.LINE_AA, tipLength=0.35)
+            cv2.arrowedLine(view, start, end, (90, 230, 90), 4, cv2.LINE_AA, tipLength=0.35)
     return view

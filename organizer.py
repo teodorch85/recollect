@@ -40,11 +40,12 @@ INBOX, BACKS, UNKNOWN = "_inbox", "_backs", "Unknown year"
 FIELDS = ["id", "status", "batch", "scanned", "bed", "dpi", "size_cm", "print_format", "back_status",
           "back_text", "back_lab", "paper", "date_stamp", "year_manual", "year", "year_source", "path",
           "back_path", "organized", "meta", "description", "fingerprint", "duplicate_of", "distinct_from",
-          "rotated", "orientation"]
+          "rotated", "orientation", "turn"]
 # description = what organize() last wrote as the photo's description (so it knows what it may clear)
 # fingerprint = duplicates.fingerprints() of the front; duplicate_of = id of the photo it repeats;
 # distinct_from = ids you marked "not a duplicate" of this one (space separated)
 # rotated = degrees the front was turned clockwise by auto-rotate; orientation = Claude's confidence: reason
+# turn = degrees you turned it clockwise in the preview: only the EXIF Orientation tag, the pixels stay
 META = "5"  # bump when the metadata written into photos changes, so organize() rewrites it everywhere
 
 # Common print sizes in cm; the format hints at the era (e.g. 9x13 in the 70s-80s, 10x15 from the 90s).
@@ -220,7 +221,8 @@ def _write_metadata(path, row, year, source):
         tags.append("Duplicate")
         keywords.append("Duplicate")
     description = row.get("back_text") or ""
-    metadata.write(path, description, tags, keywords, date, replaces=row.get("description"))
+    metadata.write(path, description, tags, keywords, date, replaces=row.get("description"),
+                   turn=int(row.get("turn") or 0))
     return description
 
 
