@@ -3,6 +3,12 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.7.2 — 2026-10-29
+- Fixed: Check now / Update now failed with an SSL certificate error. ReCollect.exe now checks
+  GitHub's certificate with Windows' own certificate store, like the browser does.
+  ReCollect 1.7.0 and 1.7.1 can't update themselves because of this: download 1.7.2 once from
+  the releases page and unzip it over the old folder.
+
 ## 1.7.1 — 2026-10-29
 - Reset scanner always switches the scanner back on in Windows, even if the reset fails half-way,
   and also revives a scanner Windows had left disabled.
