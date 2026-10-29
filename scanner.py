@@ -48,10 +48,15 @@ def _friendly(err):
 
 def _find_device(name_hint="V600"):
     dm = win32com.client.Dispatch("WIA.DeviceManager")
+    seen = []
     for info in dm.DeviceInfos:
-        if info.Type == 1 and name_hint.lower() in info.Properties("Name").Value.lower():
+        name = info.Properties("Name").Value
+        if info.Type == 1 and name_hint.lower() in name.lower():
             return info
-    raise ScannerError("Scanner not found. Is the V600 switched on and connected by USB?")
+        seen.append(name)
+    others = f" Windows sees only: {', '.join(seen)}." if seen else ""
+    raise ScannerError("Scanner not found. Is the V600 switched on and connected by USB? If it is, try "
+                       "Settings ▸ Scanning ▸ Reset scanner, or switch it off and on." + others)
 
 
 def _prop(item, pid):
@@ -122,14 +127,17 @@ def _scan(dpi, gray, region, background):
 RESET_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
 try {
-    $devices = @(Get-PnpDevice -PresentOnly | Where-Object {
-        $_.Class -eq 'Image' -and $_.FriendlyName -match 'EPSON|Perfection' })
+    $devices = @(Get-PnpDevice | Where-Object { $_.Present -and
+        $_.Class -eq 'Image' -and $_.FriendlyName -match 'EPSON|Perfection' })  # disabled ones too
     if ($devices.Count -eq 0) { Start-Service stisvc; exit 2 }
     Stop-Service stisvc -Force
     foreach ($d in $devices) {
-        Disable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false
-        Start-Sleep -Seconds 2
-        Enable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false
+        try {
+            if ($d.Status -ne 'Error') { Disable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false }
+            Start-Sleep -Seconds 2
+        } finally {  # never leave the scanner switched off in Windows
+            Enable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false
+        }
     }
     Start-Sleep -Seconds 2
     Start-Service stisvc
