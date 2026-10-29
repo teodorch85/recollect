@@ -1073,6 +1073,7 @@ def _first_start_of_exe():
 def _selftest():
     """ReCollect.exe --selftest: everything the app loads later is in the bundle (run by the build)."""
     import install_shortcuts  # noqa: F401
+    updater.latest_release("0.0.0")  # HTTPS to GitHub works with the bundled certificate check
     import win32con, win32gui, win32event, win32process  # noqa: F401
     from winrt.windows.data.xml.dom import XmlDocument  # noqa: F401
     from winrt.windows.ui.notifications import ToastNotificationManager  # noqa: F401

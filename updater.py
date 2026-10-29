@@ -8,6 +8,7 @@ and photos live elsewhere (DATA_DIR, the photos folder) and are never touched.
 import json
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,22 @@ class UpdateError(RuntimeError):
     pass
 
 
+def _tls():
+    """Check GitHub's certificate the way Windows (and the browser) does, so the PC's own trusted
+    certificates count, e.g. those an antivirus adds; certifi's list if truststore is missing."""
+    try:
+        import truststore
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except ImportError:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+
+
+def _open(url, timeout, accept="application/octet-stream"):
+    req = urllib.request.Request(url, headers={"Accept": accept, "User-Agent": "ReCollect"})
+    return urllib.request.urlopen(req, timeout=timeout, context=_tls())
+
+
 def _newer(a, b):
     try:
         return tuple(map(int, a.split("."))) > tuple(map(int, b.split(".")))
@@ -37,10 +54,8 @@ def _newer(a, b):
 def latest_release(current):
     """(version, zip url, release page) of a release newer than `current`, or None.
     Raises UpdateError when GitHub can't be reached."""
-    req = urllib.request.Request(LATEST, headers={"Accept": "application/vnd.github+json",
-                                                  "User-Agent": "ReCollect"})
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with _open(LATEST, 10, "application/vnd.github+json") as r:
             rel = json.load(r)
     except OSError as e:
         raise UpdateError(f"Couldn't reach GitHub ({getattr(e, 'reason', e)}).") from None
@@ -56,9 +71,8 @@ def download(url, progress=None):
     shutil.rmtree(WORK, ignore_errors=True)
     WORK.mkdir(parents=True)
     zip_path = WORK / "update.zip"
-    req = urllib.request.Request(url, headers={"User-Agent": "ReCollect"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as r, open(zip_path, "wb") as f:
+        with _open(url, 30) as r, open(zip_path, "wb") as f:
             size, done = int(r.headers.get("Content-Length") or 0), 0
             while chunk := r.read(1 << 20):
                 f.write(chunk)
