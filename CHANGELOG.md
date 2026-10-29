@@ -3,6 +3,15 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.3.0 — 2026-10-29
+- Preview button [P]: a quick 150 dpi scan (about 14 s) that counts the prints on the glass and
+  warns, in red, about prints closer than 3 mm, overlapping, or at the edge of the glass.
+- Duplicate finder: every front gets a fingerprint; a print scanned before (even turned, cropped
+  differently, or a smaller, faded reprint) is marked red as "new = original" right after the
+  front scan, with a "Remove duplicates from this bed" button.
+- Find duplicates… (Organize): checks the whole library, tags duplicates, and shows each pair side
+  by side to delete one (to the Recycle Bin) or keep both (never asked again).
+
 ## 1.2.0 — 2026-10-29
 - New name and icon: ReCollect. Desktop and Start menu shortcuts (`install_shortcuts.py`), own
   taskbar button.

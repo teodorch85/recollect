@@ -234,14 +234,40 @@ def pair_backs(front_rects, back_rects, dpi):
     return paired
 
 
-def draw_overlay(img, rects, labels=None, max_side=1400):
-    """Small preview of the bed with numbered outlines, for the app window."""
+MIN_GAP_MM = 3.0   # closer than this, two prints may be taken for one
+EDGE_MM = 2.0      # the scanner can't see the last mm or so of the glass
+
+
+def check_placement(rects, shape, dpi):
+    """Problems a scan would have with these prints: ([messages], {indices of prints involved})."""
+    mm = dpi / 25.4
+    boxes = [cv2.boxPoints(r).astype(np.float32) for r in rects]
+    problems, bad = [], set()
+    h, w = shape[:2]
+    for i, b in enumerate(boxes):
+        if (b.min(axis=0) < EDGE_MM * mm).any() or b[:, 0].max() > w - EDGE_MM * mm or b[:, 1].max() > h - EDGE_MM * mm:
+            problems.append(f"print {i + 1} is at the edge of the glass, move it in")
+            bad.add(i)
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            # nearest corner of one print to the outline of the other (exact for rectangles)
+            gap = min(min(cv2.pointPolygonTest(boxes[j], tuple(map(float, pt)), True) * -1 for pt in boxes[i]),
+                      min(cv2.pointPolygonTest(boxes[i], tuple(map(float, pt)), True) * -1 for pt in boxes[j]))
+            if gap < MIN_GAP_MM * mm:
+                what = "overlap" if gap <= 0 else f"are only {gap / mm:.0f} mm apart"
+                problems.append(f"prints {i + 1} and {j + 1} {what}, leave about 1 cm")
+                bad.update((i, j))
+    return problems, bad
+
+
+def draw_overlay(img, rects, labels=None, max_side=1400, alert=()):
+    """Small preview of the bed with numbered outlines, for the app window (alert: indices in red)."""
     f = max_side / max(img.shape[:2])
     view = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
     for i, r in enumerate(rects):
         (cx, cy), (w, h), a = r
         box = cv2.boxPoints(((cx * f, cy * f), (w * f, h * f), a)).astype(np.int32)
-        cv2.polylines(view, [box], True, (0, 160, 255), 3)
+        cv2.polylines(view, [box], True, (40, 40, 230) if i in alert else (0, 160, 255), 3)
         text = labels[i] if labels else str(i + 1)
         org = (int(cx * f) - 20, int(cy * f) + 12)
         cv2.putText(view, text, org, cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 0), 6, cv2.LINE_AA)
