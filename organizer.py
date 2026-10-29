@@ -381,9 +381,9 @@ def organize(catalog):
         batch = folder_name(re.sub(rf"\b{year}\b", "", r.get("batch") or "") if year else r.get("batch"))
         batch = re.sub(r"\s{2,}", " ", batch).strip(" -_") or "Unsorted"
         dest = root / (str(year) if year else UNKNOWN) / batch
-        snippet = slug(r.get("back_text") or "", 40)
         when = f"{year}-{manual_month(r)}" if year and source == "set by you" and manual_month(r) else str(year or "")
-        base = "_".join(p for p in (when or "undated", slug(batch, 30), r["id"], snippet) if p)
+        # no back text in the name: OCR of lab stamps made names like ..._e-ndura; it is in the description
+        base = "_".join(p for p in (when or "undated", slug(batch, 30), r["id"]) if p)
         front = root / (r.get("path") or "")
         if not front.is_file():  # moved by hand, or the catalogue lost track: look for it by its id
             found = _find_file(root, r["id"])

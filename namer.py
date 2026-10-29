@@ -1,5 +1,5 @@
 """Suggest a name for a batch: Claude looks at a few of its photos and the writing on their backs.
-Uses the same Anthropic API key as auto-rotate (Settings ▸ Image).
+Uses the same Anthropic API key as auto-rotate (Settings ▸ Claude).
 """
 import json
 
@@ -56,7 +56,7 @@ def suggest(key, current, photos, back_texts):
             messages=[{"role": "user", "content": content}],
         )
     except anthropic.AuthenticationError:
-        raise rotate.RotateError("The Anthropic API key was refused. Check it in Settings ▸ Image.") from None
+        raise rotate.RotateError("The Anthropic API key was refused. Check it in Settings ▸ Claude.") from None
     except anthropic.APIStatusError as e:
         raise rotate.RotateError(f"Claude reported a problem ({e.status_code}).") from None
     except anthropic.APIConnectionError:

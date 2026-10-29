@@ -49,7 +49,8 @@ REFERENCE_FILE = DATA_DIR / "empty_bed.png"
 # title of the Windows notification when each job finishes
 JOB_TITLES = {"_do_fronts": "Fronts scanned", "_do_backs": "Backs read, photos filed", "_do_preview": "Preview ready",
               "_do_find_duplicates": "Duplicate check finished", "_do_calibrate": "Scanner calibrated",
-              "_do_reset_scanner": "Scanner reset", "_do_update": "Update downloaded"}
+              "_do_reset_scanner": "Scanner reset", "_do_update": "Update downloaded",
+              "_do_turn_batch": "Photos turned upright"}
 SCANNER_JOBS = ("_do_fronts", "_do_backs", "_do_preview", "_do_calibrate")
 UPDATE_CHECK_MS = 60_000  # how often to look for a newer version in this folder (from source)
 ONLINE_CHECK_S = 6 * 3600  # how often ReCollect.exe asks GitHub for a new release
@@ -237,8 +238,11 @@ class App:
         self.summary_var = tk.StringVar()
         ttk.Label(files, textvariable=self.summary_var, foreground="#666", wraplength=int(350 * self.ui),
                   justify="left").grid(row=4, column=0, sticky="w", pady=(4, 0))
-        ttk.Button(files, text="⚙  Settings…  [Ctrl+,]", command=self.open_settings).grid(
-            row=5, column=0, sticky="we", pady=(6, 0))
+        row = ttk.Frame(files)
+        row.grid(row=5, column=0, sticky="we", pady=(6, 0))
+        ttk.Button(row, text="⚙  Settings…  [Ctrl+,]", command=self.open_settings).pack(side="left", fill="x",
+                                                                                     expand=True)
+        ttk.Button(row, text="Check for updates", command=self.check_updates_clicked).pack(side="left", padx=(4, 0))
         files.columnconfigure(0, weight=1)
         self._settings_changed()
 
@@ -255,8 +259,11 @@ class App:
         ttk.Combobox(org, textvariable=self.fix_month_var, values=MONTHS, width=5,
                      state="readonly").grid(row=1, column=2, padx=4)
         ttk.Button(org, text="Apply", command=self._set_year).grid(row=1, column=3)
-        ttk.Button(org, text="Rename batch…", command=self.rename_batch).grid(row=2, column=0, columnspan=4,
-                                                                            sticky="we", pady=(4, 0))
+        batch_row = ttk.Frame(org)
+        batch_row.grid(row=2, column=0, columnspan=4, sticky="we", pady=(4, 0))
+        ttk.Button(batch_row, text="Rename batch…", command=self.rename_batch).pack(side="left", fill="x", expand=True)
+        ttk.Button(batch_row, text="Turn upright…", command=self.turn_batch_upright).pack(side="left", fill="x",
+                                                                                        expand=True, padx=(4, 0))
         links = ttk.Frame(org)
         links.grid(row=3, column=0, columnspan=4, sticky="we", pady=(6, 0))
         ttk.Button(links, text="Open photos folder", command=self._open_folder).pack(side="left", fill="x", expand=True)
@@ -436,14 +443,68 @@ class App:
         self.fix_batch["values"] = organizer.batches(self._catalog())
 
     def rename_batch(self):
+        batch = self._picked_batch("Rename batch")
+        if batch:
+            RenameBatch(self, batch)
+
+    def _picked_batch(self, what):
+        """The batch chosen in Organize, or None (after saying why)."""
         batch = self.fix_batch_var.get().strip()
         if not any(organizer.same_batch(b, batch) for b in organizer.batches(self._catalog())):
-            messagebox.showinfo("Rename batch", "First pick the batch to rename in the list above.")
-            return
+            messagebox.showinfo(what, "First pick the batch in the list above.")
+            return None
         if self.busy:
-            messagebox.showinfo("Rename batch", "Wait for the current job to finish first.")
+            messagebox.showinfo(what, "Wait for the current job to finish first.")
+            return None
+        return batch
+
+    def turn_batch_upright(self):
+        batch = self._picked_batch("Turn upright")
+        if not batch:
             return
-        RenameBatch(self, batch)
+        if not rotate.get_key():
+            messagebox.showinfo("Turn upright", "This needs an Anthropic API key: add it in Settings ▸ Claude.")
+            return
+        n = len(self._batch_rows(batch))
+        if messagebox.askokcancel("Turn upright", f"Claude will look at the {n} photo(s) of “{batch}” and turn "
+                                  f"sideways or upside-down ones the right way up (about {n} cents).\n\n"
+                                  "Photos with no clear up stay as they are."):
+            self._turn_batch = batch
+            self._run(self._do_turn_batch, f"Checking which way is up in “{batch}”…")
+
+    def _batch_rows(self, batch):
+        return [r for r in self._catalog().rows("status IN ('ready', 'filed')")
+                if organizer.same_batch(r.get("batch"), batch)]
+
+    def _do_turn_batch(self):
+        cat, key = self._catalog(), rotate.get_key()
+        rows = self._batch_rows(self._turn_batch)
+        turned, problem = 0, None
+        for start in range(0, len(rows), 8):  # a few at a time: progress, Cancel, and bounded memory
+            self._stop_point()  # photos already turned stay turned (each is complete)
+            chunk = rows[start:start + 8]
+            self._progress(start / max(1, len(rows)))
+            self.events.put(("note", f"Checking which way is up… {start}/{len(rows)}"))
+            photos = [duplicates.read_image(cat.root / r["path"]) for r in chunk]
+            have = [(r, img) for r, img in zip(chunk, photos) if img is not None]
+            answers, problem = rotate.orient_all(key, [img for _, img in have])
+            for (r, img), answer in zip(have, answers):
+                if not answer:
+                    continue
+                degrees = answer["turn_clockwise"] if answer["confidence"] != "low" else 0
+                if degrees:
+                    path = cat.root / r["path"]
+                    fmt = "TIFF" if path.suffix.lower() in (".tif", ".tiff") else "JPEG"
+                    save_image(path, rotate.turn(img, degrees), int(r.get("dpi") or 600), fmt, self.s["jpeg_quality"])
+                    turned += 1
+                total = (int(r.get("rotated") or 0) + degrees) % 360
+                cat.upsert(r["id"], rotated=total, orientation=f"{answer['confidence']}: {answer['reason']}",
+                           meta="")  # meta="": organize() writes the photo's info into the new file again
+        organizer.organize(cat)
+        message = f"“{self._turn_batch}”: {turned} of {len(rows)} photo(s) turned upright."
+        if problem:
+            message += f" Some couldn't be checked: {problem}"
+        return None, " ".join(t for t in (message, organizer.problem_text()) if t)
 
     def _renamed(self, old, new):
         cat = self._catalog()
@@ -559,6 +620,18 @@ class App:
             self._offer(new)
             return new, None
         return None, None
+
+    def check_updates_clicked(self):
+        self.status.set("Checking for updates…")
+        self.root.update_idletasks()
+        new, problem = self.check_update_now()
+        if problem:
+            self.status.set("⚠ " + problem)
+        elif new:
+            button = "Update now" if updater.FROZEN else "Restart now"
+            self.status.set(f"ReCollect {new} is available: press {button} at the top.")
+        else:
+            self.status.set(f"You're up to date (ReCollect {__version__}).")
 
     def _offer(self, new, release=None):
         self._release = release
@@ -786,7 +859,7 @@ class App:
             return [None] * len(photos), None
         key = rotate.get_key()
         if not key:
-            return [None] * len(photos), "no API key (Settings ▸ Image)"
+            return [None] * len(photos), "no API key (Settings ▸ Claude)"
         self.events.put(("note", f"Checking which way is up ({len(photos)} photo{'s' if len(photos) > 1 else ''})…"))
         return rotate.orient_all(key, photos)
 
@@ -1053,7 +1126,7 @@ class RenameBatch:
     def _suggest(self):
         key = rotate.get_key()
         if not key:
-            self.note.set("Suggestions need an Anthropic API key: add it in Settings ▸ Image.")
+            self.note.set("Suggestions need an Anthropic API key: add it in Settings ▸ Claude.")
             return
         rows = [r for r in self.app._catalog().rows("status IN ('ready', 'filed', 'scanning')")
                 if r.get("batch") == self.batch]
