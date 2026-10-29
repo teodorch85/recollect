@@ -3,6 +3,14 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.12.0 — 2026-10-29
+- Naming template (Settings ▸ Library), in the style of Immich's storage template: {{y}} {{yy}}
+  {{M}} {{MM}} {{MMM}} {{MMMM}} {{d}} {{dd}}, {{album}} (the batch), {{id}}, {{filename}},
+  {{date}}, {{paper}}, {{size}}, '/' for folders and {{#if …}}…{{else}}…{{/if}}. Presets, a live
+  example, and Apply to library…, which renames and moves every photo to match. The default is
+  the layout used so far (Year / Batch / date_batch_number). The photo number is always kept in
+  the name.
+
 ## 1.11.1 — 2026-10-29
 - Photos are refiled when ReCollect starts, so the shorter names apply at once.
 

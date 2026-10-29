@@ -34,6 +34,7 @@ import notify
 import ocr
 import organizer
 import namer
+import naming
 import rotate
 import settings_window
 import updater
@@ -50,7 +51,7 @@ REFERENCE_FILE = DATA_DIR / "empty_bed.png"
 JOB_TITLES = {"_do_fronts": "Fronts scanned", "_do_backs": "Backs read, photos filed", "_do_preview": "Preview ready",
               "_do_find_duplicates": "Duplicate check finished", "_do_calibrate": "Scanner calibrated",
               "_do_reset_scanner": "Scanner reset", "_do_update": "Update downloaded",
-              "_do_turn_batch": "Photos turned upright"}
+              "_do_turn_batch": "Photos turned upright", "_do_refile": "Library refiled"}
 SCANNER_JOBS = ("_do_fronts", "_do_backs", "_do_preview", "_do_calibrate")
 UPDATE_CHECK_MS = 60_000  # how often to look for a newer version in this folder (from source)
 ONLINE_CHECK_S = 6 * 3600  # how often ReCollect.exe asks GitHub for a new release
@@ -79,6 +80,7 @@ DEFAULTS = {
     "flash": True,          # flash the taskbar button when the window isn't in front
     "check_updates": True,
     "auto_rotate": False,   # ask Claude which way is up (needs an API key)
+    "name_template": naming.DEFAULT,  # folders and file names, Immich storage-template style
     "shortcuts_for": "",    # the ReCollect.exe the Desktop and Start menu shortcuts point to
 }
 
@@ -144,6 +146,10 @@ class App:
         width, height = min(int(1150 * self.ui), w - 20), h - 50  # fit above the taskbar
         root.geometry(f"{width}x{height}+{x + (w - width) // 2}+{y + 10}")
         root.minsize(int(760 * self.ui), int(720 * self.ui))  # room for the whole left column
+        try:
+            organizer.template = naming.parse(self.s["name_template"])
+        except naming.TemplateError:  # edited by hand into something invalid: keep the default
+            self.s["name_template"] = naming.DEFAULT
         self._make_vars()
         self._build_ui()
         self._save_settings()  # drops settings this version no longer uses (e.g. an old API key)
@@ -447,6 +453,19 @@ class App:
         if batch:
             RenameBatch(self, batch)
 
+    def apply_template(self, template):
+        """Use a new naming template and refile the whole library to match."""
+        organizer.template = naming.parse(template)
+        self.s["name_template"] = template
+        self._save_settings()
+        self._run(self._do_refile, "Renaming and moving photos to the new template…")
+
+    def _do_refile(self):
+        cat = self._catalog()
+        moved = organizer.organize(cat)
+        return None, " ".join(t for t in (f"Naming template applied: {moved} photo(s) moved or renamed.",
+                                          organizer.problem_text()) if t)
+
     def _picked_batch(self, what):
         """The batch chosen in Organize, or None (after saying why)."""
         batch = self.fix_batch_var.get().strip()
@@ -554,6 +573,7 @@ class App:
                       scan_backs=bool(self.backs_var.get()), batch=self.batch_var.get(),
                       notify=bool(self.notify_var.get()), flash=bool(self.flash_var.get()),
                       check_updates=bool(self.updates_var.get()), auto_rotate=bool(self.rotate_var.get()),
+                      name_template=self.s["name_template"],
                       shortcuts_for=self.s["shortcuts_for"])
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
