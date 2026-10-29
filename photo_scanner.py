@@ -413,8 +413,8 @@ class App:
         root = self._root()
         if self._cat is None or self._cat.root != root:
             self._cat = organizer.Catalog(root)
-            if organizer.finish_unfinished(self._cat, keep={p["id"] for p in self.bed}):
-                organizer.organize(self._cat)  # file them now, without backs
+            organizer.finish_unfinished(self._cat, keep={p["id"] for p in self.bed})
+            organizer.organize(self._cat)  # files stuck photos, applies new naming rules; quick when nothing changed
         return self._cat
 
     def _ext(self):
