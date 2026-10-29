@@ -3,6 +3,9 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.11.1 — 2026-10-29
+- Photos are refiled when ReCollect starts, so the shorter names apply at once.
+
 ## 1.11.0 — 2026-10-29
 - Check for updates button next to Settings in the main window.
 - Settings has a Close button [Esc], and a Claude page for the API key, auto-rotate and batch
@@ -10,8 +13,7 @@ new features, PATCH for fixes. The running version shows in the window title.
 - Turn upright… (Organize): Claude checks every photo of an existing batch and turns sideways
   or upside-down ones the right way up (about 1 cent a photo).
 - Shorter file names: no more back text at the end (OCR of lab stamps gave names like
-  …_e-ndura). The back text stays in the photo's description. Existing photos are renamed the
-  next time ReCollect files photos.
+  …_e-ndura). The back text stays in the photo's description.
 
 ## 1.10.1 — 2026-10-29
 - Fixed: setting a year or renaming a batch could leave its photos in "Unknown year". Batch names
