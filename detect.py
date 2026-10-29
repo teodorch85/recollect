@@ -316,7 +316,8 @@ def check_placement(rects, shape, dpi):
                 close.append((i, j))
     problems = []
     if edge:
-        problems.append(f"{print_names(edge)} {'touches' if len(edge) == 1 else 'touch'} the edge of the glass")
+        problems.append(f"{print_names(edge)} {'reaches' if len(edge) == 1 else 'reach'} the edge of the glass, "
+                        "so a strip of it may be cut off")
     if overlap:
         problems.append(_pairs(overlap) + " overlap")
     if close:

@@ -12,6 +12,7 @@ import json
 import os
 import queue
 import re
+import sys
 import threading
 import time
 import tkinter as tk
@@ -27,6 +28,7 @@ import datestamp
 import detect
 import duplicates
 import enhance
+import notify
 import ocr
 import organizer
 from version import __version__
@@ -35,7 +37,17 @@ from scanner import ScannerError, scan_bed
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_FILE = APP_DIR / "settings.json"
 REFERENCE_FILE = APP_DIR / "empty_bed.png"
-PREVIEW_DPI = 150  # quick look at the bed: about 10 s, enough to find the prints
+# title of the Windows notification when each job finishes
+JOB_TITLES = {"_do_fronts": "Fronts scanned", "_do_backs": "Backs read, photos filed", "_do_preview": "Preview ready",
+              "_do_find_duplicates": "Duplicate check finished", "_do_calibrate": "Scanner calibrated"}
+UPDATE_CHECK_MS = 60_000  # how often to look for a newer version in this folder
+PREVIEW_DPI = 150
+
+
+def scan_seconds(dpi, share=1.0):
+    """Rough V600 time for a pass over `share` of the bed (it reports no progress of its own):
+    about 15 s up to 300 dpi, 65 s at 600 dpi."""
+    return max(8.0, (15 + max(0, dpi - 300) / 300 * 50) * share)  # quick look at the bed: about 10 s, enough to find the prints
 ICON_FILE = APP_DIR / "ReCollect.ico"
 DEFAULTS = {
     "output": str(Path.home() / "Pictures" / "PhotoScans"),
@@ -48,6 +60,19 @@ DEFAULTS = {
     "scan_backs": True,
     "batch": "",
 }
+
+
+def disk_version():
+    """The version now in this folder (a release replaces the files while the app keeps running)."""
+    try:
+        m = re.search(r'__version__\s*=\s*"([\d.]+)"', (APP_DIR / "version.py").read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    return m.group(1) if m else None
+
+
+def _newer(a, b):
+    return tuple(map(int, a.split("."))) > tuple(map(int, b.split(".")))
 
 
 def load_settings():
@@ -66,16 +91,23 @@ def save_image(path, bgr, dpi, fmt, quality):
         img.save(path, quality=quality, subsampling=0, dpi=(dpi, dpi))
 
 
+class Cancelled(Exception):
+    """The Cancel button was pressed; raised at the job's next safe stopping point."""
+
+
 class App:
     def __init__(self, root):
         self.root = root
         self.s = load_settings()
         self.events = queue.Queue()
         self.busy = False
+        self.cancelling = threading.Event()
         self.state = "front"          # "front" -> waiting for fronts, "back" -> waiting for backs
         self.bed = []                 # [{id, rect, dpi}] for prints on the glass right now
         self.reference = cv2.imread(str(REFERENCE_FILE)) if REFERENCE_FILE.exists() else None
         self._cat = None
+        self.restart_requested = False
+        self._offered = None  # version already offered, so it is announced once
 
         root.title(f"ReCollect {__version__}")
         root.iconbitmap(default=str(ICON_FILE))  # window, title bar and taskbar
@@ -91,7 +123,9 @@ class App:
         root.bind("<N>", lambda e: self._key_skip(e))
         root.bind("<p>", lambda e: self._key_preview(e))
         root.bind("<P>", lambda e: self._key_preview(e))
+        root.bind("<Escape>", lambda e: self.cancel())
         root.after(100, self._poll)
+        root.after(UPDATE_CHECK_MS, self._check_update)
         self._refresh()
         if self.reference is None:
             root.after(300, self._ask_calibrate)
@@ -103,8 +137,19 @@ class App:
         side.pack(side="left", fill="y")
         side.pack_propagate(False)  # fixed width; long texts wrap instead of widening it
 
+        self.update_box = tk.Frame(side, background="#E1F5EE", padx=8, pady=6)  # packed when an update arrives
+        self.update_text = tk.StringVar()
+        tk.Label(self.update_box, textvariable=self.update_text, background="#E1F5EE", foreground="#085041",
+                 font=("Segoe UI", 10, "bold"), wraplength=int(340 * self.ui), justify="left").pack(anchor="w")
+        row = tk.Frame(self.update_box, background="#E1F5EE")
+        row.pack(anchor="w", pady=(4, 0))
+        ttk.Button(row, text="Restart now", command=self.restart).pack(side="left")
+        ttk.Button(row, text="What's new", command=lambda: os.startfile(APP_DIR / "CHANGELOG.md")).pack(side="left", padx=4)
+        ttk.Button(row, text="Later", command=self.update_box.pack_forget).pack(side="left")
+
         files = ttk.LabelFrame(side, text="Photos", padding=6)
         files.pack(fill="x")
+        self._first_box = files
         ttk.Label(files, text="Save to:").grid(row=0, column=0, columnspan=2, sticky="w")
         self.out_var = tk.StringVar(value=self.s["output"])
         ttk.Entry(files, textvariable=self.out_var).grid(row=1, column=0, sticky="we")
@@ -158,8 +203,12 @@ class App:
         btns.pack(side="bottom", fill="x")
         style = ttk.Style()
         style.configure("Big.TButton", font=("Segoe UI", 14, "bold"), padding=10)
-        self.preview_btn = ttk.Button(btns, text="Preview: check placement  [P]", command=self.preview)
-        self.preview_btn.pack(fill="x", pady=(0, 6))
+        top_row = ttk.Frame(btns)
+        top_row.pack(fill="x", pady=(0, 6))
+        self.preview_btn = ttk.Button(top_row, text="Preview: check placement  [P]", command=self.preview)
+        self.preview_btn.pack(side="left", fill="x", expand=True)
+        self.cancel_btn = ttk.Button(top_row, text="Cancel  [Esc]", command=self.cancel)
+        self.cancel_btn.pack(side="left", padx=(4, 0))
         self.main_btn = ttk.Button(btns, style="Big.TButton", command=self.main_action)
         self.main_btn.pack(fill="x")
         row = ttk.Frame(btns)
@@ -172,6 +221,10 @@ class App:
         self.dup_btn.pack(fill="x", pady=(4, 0))
         self.count_var = tk.StringVar()
         ttk.Label(btns, textvariable=self.count_var, font=("Segoe UI", 11)).pack(anchor="w", pady=(6, 0))
+
+        self.bar = ttk.Progressbar(side, maximum=1.0)
+        self.bar.pack(side="bottom", fill="x", pady=(6, 0))
+        self._phase = None  # (from, to, start time, expected seconds) while a scan is under way
 
         self.status = tk.StringVar()
         status = ttk.Label(side, textvariable=self.status, font=("Segoe UI", 12), padding=(0, 10))
@@ -225,6 +278,7 @@ class App:
         has_dups = not self.busy and self.state == "back" and any(p.get("dup") for p in self.bed)
         self.dup_btn.config(state="normal" if has_dups else "disabled")
         self.preview_btn.config(state="normal" if not self.busy and self.state == "front" else "disabled")
+        self.cancel_btn.config(state="normal" if self.busy and not self.cancelling.is_set() else "disabled")
         if self.busy:
             self.main_btn.config(state="disabled")
             self.skip_btn.config(state="disabled")
@@ -351,6 +405,28 @@ class App:
         else:
             self._run(self._do_backs, "Scanning backs…")
 
+    def _check_update(self):
+        new = disk_version()
+        if new and new != self._offered and _newer(new, __version__):
+            self._offered = new
+            self.update_text.set(f"ReCollect {new} is ready. Restart to use it (you're on {__version__}).")
+            self.update_box.pack(fill="x", pady=(0, 6), before=self._first_box)
+            notify.job_done(self.root, "Update ready", f"ReCollect {new} is ready. Restart it when convenient.")
+        self.root.after(UPDATE_CHECK_MS, self._check_update)
+
+    def restart(self):
+        """Close and start again with the new version, but never in the middle of a job or a bed."""
+        if self.busy:
+            messagebox.showinfo("Restart", "Wait for the current job to finish (or cancel it), then restart.")
+            return
+        if self.state == "back":
+            messagebox.showinfo("Restart", "The prints on the glass are waiting for their backs. "
+                                           "Scan the backs (Space) or skip them (N) first, then restart.")
+            return
+        self._save_settings()
+        self.restart_requested = True
+        self.root.destroy()
+
     def preview(self):
         if self.busy or self.state != "front":
             return
@@ -389,16 +465,44 @@ class App:
         """Delete the fronts just saved (e.g. two prints merged) so the bed can be rescanned."""
         if self.busy or self.state != "back":
             return
+        self._drop_bed()
+        self._refresh()
+        self.status.set("Last fronts deleted. Fix the placement, then press Space to scan again.")
+
+    def cancel(self):
+        """Stop the running job at its next safe point and throw away what it half did."""
+        if not self.busy or self.cancelling.is_set():
+            return
+        self.cancelling.set()
+        self._refresh()
+        self.status.set("Cancelling… (a scan already under way finishes its pass first)")
+
+    # progress (called from the job's thread; the bar is drawn in _poll)
+    def _progress(self, value):
+        self.events.put(("progress", value))
+
+    def _scan_phase(self, start, end, seconds):
+        """The bar creeps from start towards end over the expected scan time."""
+        self.events.put(("phase", (start, end, seconds)))
+
+    def _stop_point(self):
+        if self.cancelling.is_set():
+            raise Cancelled
+
+    def _drop_bed(self):
+        """Forget the fronts of the current bed: their files in the inbox and their catalogue rows."""
         out = self._out()
         for p in self.bed:
             for f in out.glob(f"{p['id']}*"):
                 f.unlink()
             self._catalog().delete(p["id"])
         self.state, self.bed = "front", []
-        self._refresh()
-        self.status.set("Last fronts deleted. Fix the placement, then press Space to scan again.")
 
     def _run(self, fn, message):
+        self._job = JOB_TITLES.get(fn.__name__, "Done")
+        self.cancelling.clear()
+        self._phase = None
+        self.bar["value"] = 0
         self.busy = True
         self._refresh()
         self.status.set(message)
@@ -407,6 +511,8 @@ class App:
     def _worker(self, fn):
         try:
             self.events.put(("done", fn()))
+        except Cancelled:
+            self.events.put(("cancelled", None))
         except ScannerError as e:
             self.events.put(("error", str(e)))
         except Exception as e:  # keep the app alive whatever happens
@@ -419,10 +525,28 @@ class App:
                 if kind == "note":  # progress message from a job that is still running
                     self.status.set(payload)
                     continue
+                if kind == "progress":
+                    self._phase, self.bar["value"] = None, payload
+                    continue
+                if kind == "phase":
+                    a, b, secs = payload
+                    self._phase = (a, b, time.time(), secs)
+                    continue
                 self.busy = False
+                self._phase = None
+                self.bar["value"] = 1.0 if kind == "done" else 0
+                if kind == "cancelled":
+                    self.cancelling.clear()
+                    self._refresh()
+                    self.status.set("Cancelled, nothing from it was kept. " + (
+                        "Press Space to scan the backs again, or N to skip them." if self.state == "back" else
+                        "Press Space (or P) when ready."))
+                    continue
+                self.cancelling.clear()
                 if kind == "error":
                     self._refresh()
                     self.status.set("⚠ " + payload)
+                    notify.job_done(self.root, "Scanner problem", payload)
                 else:
                     view, message, *then = payload  # then: optional follow-up on the UI thread
                     self._refresh()
@@ -430,15 +554,21 @@ class App:
                         self._show(view)
                     if message:
                         self.status.set(message)
+                    notify.job_done(self.root, self._job, " ".join((message or "").split()))
                     for fn in then:
                         fn()
         except queue.Empty:
             pass
+        if self._phase:  # estimated progress of the scan pass; never claims more than 95% of it
+            a, b, t0, secs = self._phase
+            self.bar["value"] = a + (b - a) * min((time.time() - t0) / secs, 0.95)
         self.root.after(100, self._poll)
 
     # ---------- work (runs in background thread) ----------
     def _do_calibrate(self):
+        self._scan_phase(0, 1, scan_seconds(detect.WORK_DPI))
         img = scan_bed(detect.WORK_DPI)
+        self._stop_point()
         cv2.imwrite(str(REFERENCE_FILE), img)
         self.reference = img
         return img, "Calibrated. Place prints face-down with ~1 cm gaps, close the lid, press Space."
@@ -446,7 +576,10 @@ class App:
     def _do_fronts(self):
         dpi = int(self.dpi_var.get())
         t = time.time()
+        self._scan_phase(0, 0.6, scan_seconds(dpi))
         img = scan_bed(dpi)
+        self._progress(0.6)
+        self._stop_point()
         backs = detect.find_backs(img, dpi, self.reference)
         if backs:  # saving these would file blank paper as photos
             return (detect.draw_overlay(img, backs, alert=range(len(backs))),
@@ -460,6 +593,10 @@ class App:
         self.bed, stamps = [], 0
         known = [(r["id"], r["fingerprint"]) for r in cat.rows("fingerprint IS NOT NULL AND fingerprint != ''")]
         for i, r in enumerate(rects):
+            if self.cancelling.is_set():
+                self._drop_bed()  # undo the fronts of this bed saved so far
+                raise Cancelled
+            self._progress(0.6 + 0.4 * i / len(rects))
             pid = f"{first + i:05d}"
             photo = enhance.process_front(detect.crop(img, r, dpi), dpi, self.s["sharpen"], self.s["restore_color"])
             path = out / f"{pid}{ext}"
@@ -477,6 +614,9 @@ class App:
                        fingerprint=prints, duplicate_of=dup)
             known.append((pid, prints))
             self.bed.append({"id": pid, "rect": r, "dpi": dpi, "dup": dup})
+        if self.cancelling.is_set():  # pressed while the last photo was being saved
+            self._drop_bed()
+            raise Cancelled
         labels = [p["id"] + (f" = {p['dup']}" if p["dup"] else "") for p in self.bed]
         dups = [i for i, p in enumerate(self.bed) if p["dup"]]
         view = detect.draw_overlay(img, rects, labels, alert=dups)
@@ -523,25 +663,36 @@ class App:
         return rects, {i for i, r in enumerate(rects) if r in backs}
 
     def _do_preview(self):
+        self._scan_phase(0, 0.9, scan_seconds(PREVIEW_DPI))
         img = scan_bed(PREVIEW_DPI)
+        self._progress(0.9)
+        self._stop_point()
         rects, backs = self._prints_on_glass(img, PREVIEW_DPI)
+        found = "Preview only, nothing saved. "
         if not rects:
-            return detect.draw_overlay(img, []), "Preview: no prints found on the glass."
+            return detect.draw_overlay(img, []), found + "No prints found on the glass."
+        found += f"Found {len(rects)} print{'s' if len(rects) > 1 else ''}."
         problems, bad = detect.check_placement(rects, img.shape, PREVIEW_DPI)
         if backs:
             problems.insert(0, f"{detect.print_names(sorted(backs))} {'is' if len(backs) == 1 else 'are'} "
-                               "back-side down: turn face-down")
+                               "lying back-side down: turn face-down")
         view = detect.draw_overlay(img, rects, alert=bad | backs)
-        found = f"Preview: {len(rects)} print{'s' if len(rects) > 1 else ''} found."
-        if problems:
-            text = "; ".join(problems)
-            return view, f"{found} ⚠ {text[0].upper()}{text[1:]}. Fix and press P again."
-        return view, f"{found} Placement looks good. If that's the right number, press Space to scan."
+        if not problems:
+            return view, f"{found}\n✓ Placement looks good. If that's the right number, press Space to scan."
+        bullets = "\n".join(f"⚠ {p[0].upper()}{p[1:]}." for p in problems)
+        big = max(max(r[1]) for r in rects) / PREVIEW_DPI * 2.54 >= 19  # 15x20 cm or larger
+        tip = "\nTip: 15×20 prints fit only one per scan." if big and len(rects) > 1 and bad else ""
+        then = ("Turn them over and press P to check again." if backs else
+                "Move them and press P to check again, or press Space to scan anyway.")
+        return view, f"{found}\n{bullets}{tip}\n{then}"
 
     def _do_find_duplicates(self):
         cat = self._catalog()
         rows = cat.rows("status IN ('ready', 'filed')")
         for i, r in enumerate(rows):  # photos scanned before this feature have no fingerprint yet
+            self._stop_point()  # fingerprints already stored are kept: they are only a cache
+            if i % 10 == 0:
+                self._progress(0.5 * i / max(1, len(rows)))
             if not r.get("fingerprint"):
                 if i % 10 == 0:
                     self.events.put(("note", f"Fingerprinting older photos… {i}/{len(rows)}"))
@@ -549,8 +700,12 @@ class App:
                 if img is not None:
                     r["fingerprint"] = duplicates.fingerprints(img)
                     cat.upsert(r["id"], fingerprint=r["fingerprint"])
-        pairs = duplicates.find_all(rows, self._load_photo, lambda i, n: self.events.put(
-            ("note", f"Comparing photos… {i}/{n}")))
+        def progress(i, n):
+            self._stop_point()
+            self._progress(0.5 + 0.5 * i / max(1, n))
+            self.events.put(("note", f"Comparing photos… {i}/{n}"))
+        pairs = duplicates.find_all(rows, self._load_photo, progress)
+        self._stop_point()
         changed = False
         for dup, orig, _ in pairs:
             row = next(r for r in rows if r["id"] == dup)
@@ -574,12 +729,17 @@ class App:
         x0, y0 = pts.min(axis=0) - margin
         x1, y1 = pts.max(axis=0) + margin
         region = (max(x0, 0), max(y0, 0), x1 - max(x0, 0), y1 - max(y0, 0))
+        self._scan_phase(0, 0.4, scan_seconds(dpi, share=min(1.0, region[3] / 11.7)))
         img = scan_bed(dpi, region=region, background=self.reference)
+        self._progress(0.4)
+        self._stop_point()  # cancelled: the bed stays waiting for its backs
         found = detect.find_photos(img, dpi, self.reference, refine=False)
         backs = detect.pair_backs(front_rects, found, dpi)
         out, ext, cat = self._out(), self._ext(), self._catalog()
         labels, kept = [], 0
-        for p, r in zip(self.bed, backs):
+        for i, (p, r) in enumerate(zip(self.bed, backs)):
+            self._stop_point()  # a new back scan overwrites what was read so far
+            self._progress(0.4 + 0.55 * i / len(backs))
             back = detect.crop(img, r, dpi)
             if detect.is_blank(back, dpi):
                 cat.upsert(p["id"], back_status="blank")
@@ -593,6 +753,7 @@ class App:
                        back_text=personal, back_lab=lab, paper=paper)
             labels.append(f"{p['id']} " + ("text" if personal else "back"))
             kept += 1
+        self._stop_point()
         n = len(self.bed)
         summary = self._file_bed()
         self.state, self.bed = "front", []
@@ -700,9 +861,49 @@ def _work_area():
     return r.left, r.top, r.right - r.left, r.bottom - r.top
 
 
+def _wait_for(pid, seconds=20):
+    """After a restart: let the old copy close first, or it would count as 'already running'."""
+    import ctypes
+    handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+    if handle:
+        ctypes.windll.kernel32.WaitForSingleObject(handle, int(seconds * 1000))
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def _relaunch():
+    import subprocess
+    exe = APP_DIR / ".venv" / "Scripts" / "pythonw.exe"
+    subprocess.Popen([str(exe if exe.exists() else sys.executable), str(APP_DIR / "photo_scanner.py"),
+                      "--after", str(os.getpid())], cwd=APP_DIR)
+
+
+def _already_running():
+    """True (and the open window brought to the front) if ReCollect is already running."""
+    import ctypes
+    ctypes.windll.kernel32.CreateMutexW(None, False, "ReCollect.PhotoScans.single")
+    if ctypes.windll.kernel32.GetLastError() != 183:  # ERROR_ALREADY_EXISTS
+        return False
+    import win32con, win32gui
+    found = []
+    win32gui.EnumWindows(lambda h, _: found.append(h) if win32gui.GetWindowText(h).startswith("ReCollect ") else None, None)
+    for h in found:
+        win32gui.ShowWindow(h, win32con.SW_RESTORE)
+        try:
+            win32gui.SetForegroundWindow(h)
+        except Exception:
+            pass
+    return True
+
+
 if __name__ == "__main__":
+    if "--after" in sys.argv:
+        _wait_for(int(sys.argv[sys.argv.index("--after") + 1]))
+    if _already_running():
+        raise SystemExit
     _own_taskbar_entry()
     _dpi_aware()
     root = tk.Tk()
-    App(root)
+    app = App(root)
     root.mainloop()
+    if app.restart_requested:
+        _relaunch()
