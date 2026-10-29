@@ -3,7 +3,7 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
-## 1.5.0 — unreleased (beta)
+## 1.5.0 — 2026-10-29
 - Settings window [Ctrl+,]: sections on the left (Library, Scanning, Image, Notifications,
   Updates, About), each setting with a short explanation; changes are saved at once.
 - New settings: back resolution, notifications and taskbar flashing on/off, update checks on/off.
