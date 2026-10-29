@@ -32,6 +32,7 @@ from datetime import datetime
 from pathlib import Path
 
 import metadata
+import naming
 
 INBOX, BACKS, UNKNOWN = "_inbox", "_backs", "Unknown year"
 
@@ -194,12 +195,16 @@ class Catalog:
             tmp.unlink(missing_ok=True)
 
 
-def _write_metadata(path, row, year, source):
-    # the most exact date that agrees with the chosen year
+def photo_date(row, year, source):
+    """The most exact date that agrees with the chosen year: 'YYYY-MM-DD', 'YYYY-MM', 'YYYY' or None."""
     month = manual_month(row) if source == "set by you" else None
     dates = [find_date(row.get("back_text")), row.get("date_stamp"), f"{year}-{month}" if month else None,
              str(year) if year else None]
-    date = next((d for d in dates if d and year and d.startswith(str(year))), None)
+    return next((d for d in dates if d and year and d.startswith(str(year))), None)
+
+
+def _write_metadata(path, row, year, source):
+    date = photo_date(row, year, source)
     values = {"Batch": row.get("batch"), "Paper": row.get("paper"), "Print size": row.get("print_format")}
     tags = [f"{k}/{v.replace('/', '-')}" for k, v in values.items() if v]
     keywords = [v for v in values.values() if v]  # flat list for apps without tag folders
@@ -346,6 +351,7 @@ def set_batch_year(catalog, batch, year, month=None):
     return organize(catalog)
 
 
+template = naming.parse(naming.DEFAULT)  # set by the app from Settings ▸ Library ▸ Naming template
 problems = []  # (photo id, why) for what the last organize() couldn't do; it retries them next time
 
 
@@ -380,10 +386,11 @@ def organize(catalog):
         # the year already names the parent folder: "1988 Crete" -> 1988/Crete
         batch = folder_name(re.sub(rf"\b{year}\b", "", r.get("batch") or "") if year else r.get("batch"))
         batch = re.sub(r"\s{2,}", " ", batch).strip(" -_") or "Unsorted"
-        dest = root / (str(year) if year else UNKNOWN) / batch
-        when = f"{year}-{manual_month(r)}" if year and source == "set by you" and manual_month(r) else str(year or "")
+        parts = (photo_date(r, year, source) or "").split("-") + [None, None]
         # no back text in the name: OCR of lab stamps made names like ..._e-ndura; it is in the description
-        base = "_".join(p for p in (when or "undated", slug(batch, 30), r["id"]) if p)
+        folders, base = naming.render(template, naming.values_for(
+            year, parts[1], parts[2], batch, r["id"], slug(batch, 30), r.get("paper"), r.get("print_format")))
+        dest = root.joinpath(*folders)
         front = root / (r.get("path") or "")
         if not front.is_file():  # moved by hand, or the catalogue lost track: look for it by its id
             found = _find_file(root, r["id"])
@@ -432,8 +439,9 @@ def organize(catalog):
         changed += 1
     if changed:
         catalog.export_csv()
-        for d in sorted(root.glob("*/*/"), reverse=True) + sorted(root.glob("*/")):  # tidy empty folders
-            if d.name not in (INBOX, BACKS) and d.parent.name not in (INBOX, BACKS) and not any(d.iterdir()):
+        for d, _, _ in sorted(os.walk(root), key=lambda w: -len(w[0])):  # tidy empty folders, deepest first
+            d = Path(d)
+            if d != root and not {INBOX, BACKS} & set(d.relative_to(root).parts) and not any(d.iterdir()):
                 d.rmdir()
     return moved
 

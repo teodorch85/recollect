@@ -9,6 +9,7 @@ from tkinter import messagebox, ttk
 
 import enhance
 import notify
+import naming
 import organizer
 import rotate
 import updater
@@ -168,9 +169,16 @@ class SettingsWindow:
         self._row(card, "Photos folder", a.out_var, self._buttons(("Change…", a._browse), ("Open", a._open_folder)))
         self._row(card, "Catalogue", "Every photo with its year, batch, back text and duplicates, as a spreadsheet.",
                   self._button("Open in Excel", a._open_catalog))
-        card = self._card("How photos are filed")
-        self._row(card, "Folders", f"Year / Batch, e.g. 1994 / Crete. Photos whose year isn't known go in "
-                                   f"“{organizer.UNKNOWN}” until you set the year for their batch (main window).")
+        card = self._card("Naming template")
+        self.tpl_var = tk.StringVar(value=a.s["name_template"])
+        self.tpl_note = tk.StringVar()
+        self._row(card, "Folders and file names", "Like Immich's storage template: {{y}} {{MM}} {{MMMM}} {{dd}} "
+                  "{{album}} (the batch) {{id}} {{filename}} {{date}}, and {{#if y}}…{{else}}…{{/if}}. "
+                  "'/' makes a folder.", self._template_box, below=True)
+        tk.Label(card, textvariable=self.tpl_note, font=("Segoe UI", 9), background=CARD, foreground=ACCENT,
+                 anchor="w", justify="left", wraplength=int(560 * self.ui), padx=14).pack(fill="x", pady=(0, 10))
+        self.tpl_var.trace_add("write", lambda *e: self._preview_template())
+        self._preview_template()
 
     def _page_scanning(self):
         a = self.app
@@ -203,6 +211,39 @@ class SettingsWindow:
         self._row(card, "JPEG quality", "100 is the most faithful (about 20 MB for a large print); 95 looks the "
                                         "same at about a third of the size.",
                   self._choice(a.quality_var, [90, 95, 100]))
+
+    def _template_box(self, parent):
+        box = tk.Frame(parent, background=CARD)
+        presets = ttk.Combobox(box, values=naming.PRESETS, state="readonly", width=70)
+        presets.set("Presets…")
+        presets.bind("<<ComboboxSelected>>", lambda e: self.tpl_var.set(presets.get()))
+        presets.pack(fill="x")
+        ttk.Entry(box, textvariable=self.tpl_var, width=72).pack(fill="x", pady=(4, 0))
+        row = tk.Frame(box, background=CARD)
+        row.pack(fill="x", pady=(4, 0))
+        ttk.Button(row, text="Apply to library…", command=self._apply_template).pack(side="left")
+        ttk.Button(row, text="Default", command=lambda: self.tpl_var.set(naming.DEFAULT)).pack(side="left", padx=4)
+        return box
+
+    def _preview_template(self):
+        shown, problem = naming.example(self.tpl_var.get())
+        saved = "" if self.tpl_var.get() == self.app.s["name_template"] else "  (not applied yet)"
+        self.tpl_note.set(f"⚠ {problem}" if problem else f"e.g. {shown}{saved}")
+
+    def _apply_template(self):
+        template = self.tpl_var.get().strip()
+        shown, problem = naming.example(template)
+        if problem:
+            messagebox.showinfo("Naming template", problem, parent=self.win)
+            return
+        if self.app.busy:
+            messagebox.showinfo("Naming template", "Wait for the current job to finish first.", parent=self.win)
+            return
+        if messagebox.askokcancel("Naming template", "Every photo in your library will be renamed and moved to "
+                                  f"match:\n\n{template}\n\ne.g. {shown}\n\nPhotos open in another program are "
+                                  "moved next time.", parent=self.win):
+            self.app.apply_template(template)
+            self._preview_template()
 
     def _key_box(self, parent):
         box = tk.Frame(parent, background=CARD)
