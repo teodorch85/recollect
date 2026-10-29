@@ -1,5 +1,5 @@
 """Turn scanned prints the right way up: Claude looks at a small copy of each photo and says how far
-to turn it. Needs an Anthropic API key (Settings ▸ Image), kept in Windows Credential Manager.
+to turn it. Needs an Anthropic API key (Settings ▸ Claude), kept in Windows Credential Manager.
 
 Cost: one small image per photo (about 1,000 tokens in, a few hundred out), roughly 1 cent a photo.
 """
@@ -89,7 +89,7 @@ def ask(client, bgr):
             ]}],
         )
     except anthropic.AuthenticationError:
-        raise RotateError("The Anthropic API key was refused. Check it in Settings ▸ Image.") from None
+        raise RotateError("The Anthropic API key was refused. Check it in Settings ▸ Claude.") from None
     except anthropic.PermissionDeniedError:
         raise RotateError("The Anthropic API key isn't allowed to use Claude (check billing in the Console).") from None
     except anthropic.RateLimitError:

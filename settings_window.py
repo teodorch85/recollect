@@ -16,7 +16,7 @@ from version import __version__
 
 SIDEBAR, PAGE, CARD, BORDER = "#F3F3F3", "#FAFAFA", "#FFFFFF", "#E5E5E5"
 TEXT, MUTED, ACCENT, HOVER = "#1A1A1A", "#666666", "#0F6E56", "#E8E8E8"
-SECTIONS = ("Library", "Scanning", "Image", "Notifications", "Updates", "About")
+SECTIONS = ("Library", "Scanning", "Image", "Claude", "Notifications", "Updates", "About")
 
 
 class Switch(tk.Canvas):
@@ -77,8 +77,9 @@ class SettingsWindow:
                 w.bind("<Enter>", lambda e, n=name: self._hover(n, True))
                 w.bind("<Leave>", lambda e, n=name: self._hover(n, False))
             self.items[name] = (item, bar, label)
+        ttk.Button(nav, text="Close  [Esc]", command=self.win.destroy).pack(side="bottom", fill="x", padx=10)
         tk.Label(nav, text="Changes are saved\nautomatically.", font=("Segoe UI", 9), background=SIDEBAR,
-                 foreground=MUTED, justify="left", anchor="w", padx=10).pack(side="bottom", fill="x")
+                 foreground=MUTED, justify="left", anchor="w", padx=10).pack(side="bottom", fill="x", pady=(0, 8))
 
         self.body = tk.Frame(self.win, background=PAGE, padx=int(28 * ui), pady=int(20 * ui))
         self.body.pack(side="left", fill="both", expand=True)
@@ -116,13 +117,16 @@ class SettingsWindow:
         card.pack(fill="x", pady=(0, 14))
         return card
 
-    def _row(self, card, title, desc=None, control=None):
-        """One setting: title and grey description on the left, its control on the right."""
+    def _row(self, card, title, desc=None, control=None, below=False):
+        """One setting: title and grey description on the left, its control on the right (or under
+        them, for wide controls)."""
         if card.winfo_children():
             tk.Frame(card, background=BORDER, height=1).pack(fill="x", padx=14)
         row = tk.Frame(card, background=CARD, padx=14, pady=10)
         row.pack(fill="x")
-        if control:
+        if control and below:
+            control(row).pack(side="bottom", anchor="w", pady=(8, 0))
+        elif control:
             control(row).pack(side="right", padx=(16, 0))
         text = tk.Frame(row, background=CARD)
         text.pack(side="left", fill="x", expand=True)
@@ -193,13 +197,6 @@ class SettingsWindow:
         self._row(card, "Unsharp mask", "Sharpens the scan like Epson Scan 2.",
                   self._choice(a.sharpen_var, list(enhance.SHARPEN_LEVELS)))
         self._row(card, "Color restoration", "Brings back colours of faded prints.", self._switch(a.restore_var))
-        card = self._card("Auto-rotate")
-        self._row(card, "Turn photos upright", "Claude looks at each new scan and turns sideways or upside-down "
-                                               "photos the right way up. About 1 cent a photo, paid with your "
-                                               "Anthropic API key.", self._switch(a.rotate_var))
-        self.key_state = tk.StringVar()
-        self._row(card, "Anthropic API key", self.key_state, self._key_box)
-        self._show_key_state()
         card = self._card("File")
         self._row(card, "Format", "JPEG for everyday use; TIFF keeps every detail but is several times larger.",
                   self._choice(a.fmt_var, ["JPEG", "TIFF"]))
@@ -210,7 +207,7 @@ class SettingsWindow:
     def _key_box(self, parent):
         box = tk.Frame(parent, background=CARD)
         self.key_var = tk.StringVar()
-        ttk.Entry(box, textvariable=self.key_var, show="•", width=22).pack(side="left")
+        ttk.Entry(box, textvariable=self.key_var, show="•", width=44).pack(side="left")
         ttk.Button(box, text="Save", command=self._save_key).pack(side="left", padx=(4, 0))
         ttk.Button(box, text="Test", command=self._test_key).pack(side="left", padx=(4, 0))
         return box
@@ -222,7 +219,8 @@ class SettingsWindow:
             saved = False
         self.key_state.set(note or ("Saved in Windows Credential Manager. Paste a new one to replace it, or save "
                                     "an empty box to remove it." if saved else
-                                    "Create one at console.anthropic.com ▸ API keys, paste it here, press Save."))
+                                    "Needed for everything on this page. Create one at console.anthropic.com ▸ "
+                                    "API keys (billing must be set up there), paste it here and press Save."))
 
     def _save_key(self):
         key = self.key_var.get().strip()
@@ -243,6 +241,19 @@ class SettingsWindow:
         problem = rotate.test_key(key)
         self._show_key_state(problem or ("The key works." + ("" if self.key_var.get().strip() == "" else
                                                              " Press Save to keep it.")))
+
+    def _page_claude(self):
+        a = self.app
+        card = self._card()
+        self.key_state = tk.StringVar()
+        self._row(card, "Anthropic API key", self.key_state, self._key_box, below=True)
+        self._show_key_state()
+        card = self._card("Uses")
+        self._row(card, "Turn photos upright", "Claude looks at each new scan and turns sideways or upside-down "
+                                               "photos the right way up. About 1 cent a photo.",
+                  self._switch(a.rotate_var))
+        self._row(card, "Suggest batch names", "Rename batch… ▸ Suggest with Claude, in the main window. About "
+                                               "2 cents a suggestion.")
 
     def _page_notifications(self):
         a = self.app
