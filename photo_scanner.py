@@ -12,6 +12,7 @@ import json
 import os
 import queue
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -41,13 +42,15 @@ REFERENCE_FILE = APP_DIR / "empty_bed.png"
 JOB_TITLES = {"_do_fronts": "Fronts scanned", "_do_backs": "Backs read, photos filed", "_do_preview": "Preview ready",
               "_do_find_duplicates": "Duplicate check finished", "_do_calibrate": "Scanner calibrated"}
 UPDATE_CHECK_MS = 60_000  # how often to look for a newer version in this folder
-PREVIEW_DPI = 150
+PREVIEW_DPI = 150  # quick look at the bed: about 10 s, enough to find the prints
 
 
 def scan_seconds(dpi, share=1.0):
     """Rough V600 time for a pass over `share` of the bed (it reports no progress of its own):
     about 15 s up to 300 dpi, 65 s at 600 dpi."""
-    return max(8.0, (15 + max(0, dpi - 300) / 300 * 50) * share)  # quick look at the bed: about 10 s, enough to find the prints
+    return max(8.0, (15 + max(0, dpi - 300) / 300 * 50) * share)
+
+
 ICON_FILE = APP_DIR / "ReCollect.ico"
 DEFAULTS = {
     "output": str(Path.home() / "Pictures" / "PhotoScans"),
@@ -72,7 +75,10 @@ def disk_version():
 
 
 def _newer(a, b):
-    return tuple(map(int, a.split("."))) > tuple(map(int, b.split(".")))
+    try:
+        return tuple(map(int, a.split("."))) > tuple(map(int, b.split(".")))
+    except ValueError:  # version.py caught half-written during an update
+        return False
 
 
 def load_settings():
@@ -144,7 +150,7 @@ class App:
         row = tk.Frame(self.update_box, background="#E1F5EE")
         row.pack(anchor="w", pady=(4, 0))
         ttk.Button(row, text="Restart now", command=self.restart).pack(side="left")
-        ttk.Button(row, text="What's new", command=lambda: os.startfile(APP_DIR / "CHANGELOG.md")).pack(side="left", padx=4)
+        ttk.Button(row, text="What's new", command=self._whats_new).pack(side="left", padx=4)
         ttk.Button(row, text="Later", command=self.update_box.pack_forget).pack(side="left")
 
         files = ttk.LabelFrame(side, text="Photos", padding=6)
@@ -411,8 +417,20 @@ class App:
             self._offered = new
             self.update_text.set(f"ReCollect {new} is ready. Restart to use it (you're on {__version__}).")
             self.update_box.pack(fill="x", pady=(0, 6), before=self._first_box)
-            notify.job_done(self.root, "Update ready", f"ReCollect {new} is ready. Restart it when convenient.")
+            self._notify("Update ready", f"ReCollect {new} is ready. Restart it when convenient.")
         self.root.after(UPDATE_CHECK_MS, self._check_update)
+
+    def _whats_new(self):
+        try:
+            os.startfile(APP_DIR / "CHANGELOG.md")
+        except OSError:  # no app set up for .md files
+            subprocess.Popen(["notepad.exe", str(APP_DIR / "CHANGELOG.md")])
+
+    def _notify(self, title, text):
+        try:
+            notify.job_done(self.root, title, text)
+        except Exception:  # a notification must never stop the app
+            pass
 
     def restart(self):
         """Close and start again with the new version, but never in the middle of a job or a bed."""
@@ -546,7 +564,7 @@ class App:
                 if kind == "error":
                     self._refresh()
                     self.status.set("⚠ " + payload)
-                    notify.job_done(self.root, "Scanner problem", payload)
+                    self._notify("Scanner problem", payload)
                 else:
                     view, message, *then = payload  # then: optional follow-up on the UI thread
                     self._refresh()
@@ -554,7 +572,7 @@ class App:
                         self._show(view)
                     if message:
                         self.status.set(message)
-                    notify.job_done(self.root, self._job, " ".join((message or "").split()))
+                    self._notify(self._job, " ".join((message or "").split()))
                     for fn in then:
                         fn()
         except queue.Empty:
@@ -736,24 +754,32 @@ class App:
         found = detect.find_photos(img, dpi, self.reference, refine=False)
         backs = detect.pair_backs(front_rects, found, dpi)
         out, ext, cat = self._out(), self._ext(), self._catalog()
-        labels, kept = [], 0
-        for i, (p, r) in enumerate(zip(self.bed, backs)):
-            self._stop_point()  # a new back scan overwrites what was read so far
-            self._progress(0.4 + 0.55 * i / len(backs))
-            back = detect.crop(img, r, dpi)
-            if detect.is_blank(back, dpi):
-                cat.upsert(p["id"], back_status="blank")
-                labels.append(f"{p['id']} blank")
-                continue
-            path = out / f"{p['id']}_back{ext}"
-            save_image(path, back, dpi, self.s["format"], self.s["jpeg_quality"])
-            self.events.put(("note", f"Reading back of {p['id']}…"))
-            personal, lab, paper = organizer.split_back_text(ocr.read_text(back))
-            cat.upsert(p["id"], back_status="saved", back_path=self._rel(path),
-                       back_text=personal, back_lab=lab, paper=paper)
-            labels.append(f"{p['id']} " + ("text" if personal else "back"))
-            kept += 1
-        self._stop_point()
+        labels, kept, rows, saved = [], 0, [], []
+        try:
+            for i, (p, r) in enumerate(zip(self.bed, backs)):
+                self._stop_point()
+                self._progress(0.4 + 0.55 * i / len(backs))
+                back = detect.crop(img, r, dpi)
+                if detect.is_blank(back, dpi):
+                    rows.append((p["id"], {"back_status": "blank"}))
+                    labels.append(f"{p['id']} blank")
+                    continue
+                path = out / f"{p['id']}_back{ext}"
+                save_image(path, back, dpi, self.s["format"], self.s["jpeg_quality"])
+                saved.append(path)
+                self.events.put(("note", f"Reading back of {p['id']}…"))
+                personal, lab, paper = organizer.split_back_text(ocr.read_text(back))
+                rows.append((p["id"], {"back_status": "saved", "back_path": self._rel(path),
+                                       "back_text": personal, "back_lab": lab, "paper": paper}))
+                labels.append(f"{p['id']} " + ("text" if personal else "back"))
+                kept += 1
+            self._stop_point()
+        except Cancelled:  # the bed stays waiting for its backs, with nothing of this pass kept
+            for path in saved:
+                path.unlink(missing_ok=True)
+            raise
+        for pid, fields in rows:  # written only once the whole bed is read
+            cat.upsert(pid, **fields)
         n = len(self.bed)
         summary = self._file_bed()
         self.state, self.bed = "front", []
@@ -871,7 +897,6 @@ def _wait_for(pid, seconds=20):
 
 
 def _relaunch():
-    import subprocess
     exe = APP_DIR / ".venv" / "Scripts" / "pythonw.exe"
     subprocess.Popen([str(exe if exe.exists() else sys.executable), str(APP_DIR / "photo_scanner.py"),
                       "--after", str(os.getpid())], cwd=APP_DIR)
@@ -880,8 +905,9 @@ def _relaunch():
 def _already_running():
     """True (and the open window brought to the front) if ReCollect is already running."""
     import ctypes
-    ctypes.windll.kernel32.CreateMutexW(None, False, "ReCollect.PhotoScans.single")
-    if ctypes.windll.kernel32.GetLastError() != 183:  # ERROR_ALREADY_EXISTS
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW(None, False, "ReCollect.PhotoScans.single")  # held until this process exits
+    if ctypes.get_last_error() != 183:  # ERROR_ALREADY_EXISTS
         return False
     import win32con, win32gui
     found = []
