@@ -3,6 +3,16 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.7.0 — 2026-10-29
+- ReCollect.exe: download it from the GitHub releases page, unzip, and open it. No Python, git or
+  command line needed. On first start it brings over your settings and calibration from the old
+  version and points the Desktop and Start menu shortcuts at itself.
+- Updates itself: every few hours it checks GitHub for a new release; a banner offers Update now,
+  which downloads it, closes ReCollect and opens the new version (never mid-job or mid-bed).
+  Settings ▸ Updates ▸ Check now checks straight away.
+- ReCollect.exe keeps its settings and calibration in AppData\Local\ReCollect, so updates never
+  touch them. Your photos stay where they are.
+
 ## 1.6.0 — 2026-10-29
 - Reset scanner (Settings ▸ Scanning): when the light keeps flashing or scans fail, reconnects the
   scanner's USB device and restarts Windows' scanner service, like unplugging and plugging it in.

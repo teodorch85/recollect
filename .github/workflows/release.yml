@@ -1,0 +1,65 @@
+# Every push to main whose version.py names a version not yet released builds ReCollect.exe and
+# publishes it as a GitHub release (ReCollect-<version>.zip). ReCollect.exe updates itself from these.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: v
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path version.py -Pattern '__version__\s*=\s*"([\d.]+)"').Matches[0].Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
+          gh release view "v$v" *> $null
+          "exists=$($LASTEXITCODE -eq 0)" >> $env:GITHUB_OUTPUT
+          exit 0
+
+      - uses: actions/setup-python@v5
+        if: steps.v.outputs.exists == 'False'
+        with:
+          python-version: "3.12"
+
+      - name: Build ReCollect.exe
+        if: steps.v.outputs.exists == 'False'
+        shell: pwsh
+        run: |
+          pip install -r requirements.txt pyinstaller
+          pyinstaller --noconfirm --windowed --name ReCollect --icon ReCollect.ico `
+            --add-data "ReCollect.ico;." --add-data "ReCollect.png;." --add-data "CHANGELOG.md;." `
+            --collect-all winrt --collect-all pyexiv2 photo_scanner.py
+
+      - name: Self-test
+        if: steps.v.outputs.exists == 'False'
+        shell: pwsh
+        run: |
+          $p = Start-Process dist\ReCollect\ReCollect.exe -ArgumentList "--selftest" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Get-Content "$env:TEMP\recollect-selftest.txt"; exit 1 }
+
+      - name: Publish release
+        if: steps.v.outputs.exists == 'False'
+        shell: pwsh
+        run: |
+          $v = "${{ steps.v.outputs.version }}"
+          Compress-Archive -Path dist\ReCollect -DestinationPath "ReCollect-$v.zip"
+          $section = ((Get-Content CHANGELOG.md -Raw -Encoding utf8) -split "(?m)^## " |
+                      Where-Object { $_.StartsWith("$v ") } | Select-Object -First 1)
+          $changes = ($section -split "`n", 2)[1]
+          $install = "`n**New install:** download ReCollect-$v.zip, unzip it into a folder of your own " +
+                     "(e.g. Documents), and open ReCollect.exe inside. Already installed? ReCollect " +
+                     "offers this update itself."
+          Set-Content notes.md ($changes + $install) -Encoding utf8
+          gh release create "v$v" "ReCollect-$v.zip" --title "ReCollect $v" --notes-file notes.md --target $env:GITHUB_SHA
