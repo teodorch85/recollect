@@ -447,6 +447,11 @@ class App:
         dpi = int(self.dpi_var.get())
         t = time.time()
         img = scan_bed(dpi)
+        backs = detect.find_backs(img, dpi, self.reference)
+        if backs:  # saving these would file blank paper as photos
+            return (detect.draw_overlay(img, backs, alert=range(len(backs))),
+                    f"Nothing saved: {len(backs)} print{'s are' if len(backs) > 1 else ' is'} lying back-side "
+                    "down (red). Turn them face-down and press Space again.")
         rects = detect.find_photos(img, dpi, self.reference)
         if not rects:
             return detect.draw_overlay(img, []), "No prints found on the glass. Check placement and try again."
@@ -508,17 +513,30 @@ class App:
         row = self._catalog().rows("id = ?", (pid,))
         return duplicates.read_image(self._catalog().root / row[0]["path"]) if row and row[0].get("path") else None
 
+    def _prints_on_glass(self, img, dpi):
+        """(rects of every print, indices of the ones lying back-side down)."""
+        backs = detect.find_backs(img, dpi, self.reference)
+        # the picture detector boxes watermark text on white backs: let the paper outlines replace it
+        photos = [r for r in detect.find_photos(img, dpi, self.reference, refine=False)
+                  if not any(detect.inside(r[0], b) for b in backs)]
+        rects = detect.reading_order(photos + backs, dpi)
+        return rects, {i for i, r in enumerate(rects) if r in backs}
+
     def _do_preview(self):
         img = scan_bed(PREVIEW_DPI)
-        rects = detect.find_photos(img, PREVIEW_DPI, self.reference, refine=False)
+        rects, backs = self._prints_on_glass(img, PREVIEW_DPI)
         if not rects:
             return detect.draw_overlay(img, []), "Preview: no prints found on the glass."
         problems, bad = detect.check_placement(rects, img.shape, PREVIEW_DPI)
-        view = detect.draw_overlay(img, rects, alert=bad)
-        found = f"Preview: {len(rects)} print{'s' if len(rects) > 1 else ''} found. "
+        if backs:
+            problems.insert(0, f"{detect.print_names(sorted(backs))} {'is' if len(backs) == 1 else 'are'} "
+                               "back-side down: turn face-down")
+        view = detect.draw_overlay(img, rects, alert=bad | backs)
+        found = f"Preview: {len(rects)} print{'s' if len(rects) > 1 else ''} found."
         if problems:
-            return view, found + "⚠ " + "; ".join(problems).capitalize() + ". Fix it and press P again."
-        return view, found + "Placement looks good. If that's the right number, press Space to scan."
+            text = "; ".join(problems)
+            return view, f"{found} ⚠ {text[0].upper()}{text[1:]}. Fix and press P again."
+        return view, f"{found} Placement looks good. If that's the right number, press Space to scan."
 
     def _do_find_duplicates(self):
         cat = self._catalog()

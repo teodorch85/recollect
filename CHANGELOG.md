@@ -3,6 +3,13 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.3.1 — 2026-10-29
+- Prints lying back-side down are recognised (white paper with almost no picture): Preview says
+  which ones to turn over, and a front scan refuses to save them instead of filing blank paper.
+- White prints are found by their paper outline (brighter than the lid), so Preview counts them
+  correctly instead of boxing watermark text.
+- Shorter placement warnings, one line per kind of problem.
+
 ## 1.3.0 — 2026-10-29
 - Preview button [P]: a quick 150 dpi scan (about 14 s) that counts the prints on the glass and
   warns, in red, about prints closer than 3 mm, overlapping, or at the edge of the glass.
