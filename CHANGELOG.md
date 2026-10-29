@@ -3,6 +3,13 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.10.1 — 2026-10-29
+- Fixed: setting a year or renaming a batch could leave its photos in "Unknown year". Batch names
+  now match however their spaces or Greek accents were stored; a photo moved by hand is found
+  again by its number instead of being skipped.
+- After Set year or Rename, the status line says why any photo of the batch didn't move (waiting
+  for its backs, file not found, open in another program).
+
 ## 1.10.0 — 2026-10-29
 - Rename batch… (Organize): pick a batch, type its new name; folders, file names and the Batch
   tag follow. Using another batch's name merges the two. If it is the label you're scanning
