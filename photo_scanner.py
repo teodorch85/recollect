@@ -437,7 +437,7 @@ class App:
 
     def rename_batch(self):
         batch = self.fix_batch_var.get().strip()
-        if batch not in organizer.batches(self._catalog()):
+        if not any(organizer.same_batch(b, batch) for b in organizer.batches(self._catalog())):
             messagebox.showinfo("Rename batch", "First pick the batch to rename in the list above.")
             return
         if self.busy:
@@ -454,7 +454,7 @@ class App:
             self.batch_var.set(new)
             label = " The batch label for new scans was changed too."
         self.status.set(" ".join(t for t in (f"Batch “{old}” is now “{new}”: {moved} photo(s) moved.{label}",
-                                             organizer.problem_text()) if t))
+                                             organizer.batch_report(cat, new), organizer.problem_text()) if t))
         self._refresh()
 
     def _show_batch_date(self):
@@ -473,11 +473,9 @@ class App:
         cat = self._catalog()
         moved = organizer.set_batch_year(cat, batch, year, month)
         when = f"{self.fix_month_var.get()} {year}" if month else year
-        waiting = len([r for r in cat.rows("status = 'scanning'") if r["batch"] == batch])
         self.status.set(" ".join(t for t in (
             f"Batch “{batch}” → {when or 'automatic year'}: {moved} photo(s) moved.",
-            f"{waiting} still wait for their backs on the glass and move once those are scanned or skipped."
-            if waiting else "", organizer.problem_text()) if t))
+            organizer.batch_report(cat, batch), organizer.problem_text()) if t))
         self._refresh()
 
     def _open_folder(self):

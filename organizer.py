@@ -26,6 +26,7 @@ import os
 import re
 import sqlite3
 import threading
+import unicodedata
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -71,7 +72,8 @@ def slug(text, n=40):
 
 
 def folder_name(text):
-    return re.sub(r'[<>:"/\\|?*]', "", text or "").strip()[:60]
+    text = unicodedata.normalize("NFC", text or "")  # one folder per name, however its accents were typed
+    return re.sub(r'[<>:"/\\|?*]', "", text).strip()[:60]
 
 
 def print_size(w_px, h_px, dpi):
@@ -260,10 +262,8 @@ def manual_month(r):
 
 def batch_date(catalog, batch):
     """(year, month) set by you for a batch, as strings ('' when not set)."""
-    with catalog.lock:
-        row = catalog.db.execute("SELECT year_manual FROM photos WHERE batch = ? AND year_manual IS NOT NULL "
-                                 "AND year_manual != '' LIMIT 1", (batch,)).fetchone()
-    value = row[0] if row else ""
+    value = next((r["year_manual"] for r in catalog.rows("year_manual IS NOT NULL AND year_manual != ''")
+                  if same_batch(r.get("batch"), batch)), "")
     return value[:4], value[5:7]
 
 
@@ -282,12 +282,59 @@ def batches(catalog):
             "SELECT DISTINCT batch FROM photos WHERE batch IS NOT NULL AND batch != '' ORDER BY batch")]
 
 
+def same_batch(a, b):
+    """Batch names compare equal whatever the spacing or Unicode form (Greek accents can be stored two ways)."""
+    norm = lambda t: re.sub(r"\s+", " ", unicodedata.normalize("NFC", t or "")).strip().casefold()
+    return norm(a) == norm(b)
+
+
+def _batch_ids(catalog, batch):
+    return [r["id"] for r in catalog.rows() if same_batch(r.get("batch"), batch)]
+
+
+def _set_for(catalog, ids, field, value):
+    with catalog.lock:
+        catalog.db.executemany(f"UPDATE photos SET {field} = ? WHERE id = ?", [(value, i) for i in ids])
+        catalog.db.commit()
+
+
+def batch_report(catalog, batch):
+    """Why photos of a batch may not be in their Year / Batch folder yet, as one line ('' if all are)."""
+    rows = [r for r in catalog.rows() if same_batch(r.get("batch"), batch)]
+    if not rows:
+        return f"⚠ No photos have the batch name “{batch}”."
+    waiting = sum(r["status"] == "scanning" for r in rows)
+    missing = [r["id"] for r in rows if r["status"] in ("ready", "filed")
+               and not (catalog.root / (r.get("path") or "")).is_file()]
+    other = sum(r["status"] not in ("scanning", "ready", "filed") for r in rows)
+    parts = []
+    if waiting:
+        parts.append(f"{waiting} wait for their backs on the glass (scan or skip them first)")
+    if missing:
+        parts.append(f"{len(missing)} can't be found on disk ({', '.join(missing[:3])})")
+    if other:
+        parts.append(f"{other} have status {', '.join(sorted({r['status'] for r in rows} - {'scanning', 'ready', 'filed'}))}")
+    return ("⚠ Of its " + str(len(rows)) + " photos, " + "; ".join(parts) + ".") if parts else ""
+
+
+def _find_file(root, pid, back=False):
+    """Where photo `pid`'s front (or back) is now, if it was moved by hand: files carry the id in their name."""
+    pattern = re.compile(rf"(^|_){re.escape(pid)}(_|$)")
+    for f in root.rglob(f"*{pid}*"):
+        stem = f.stem
+        is_back = stem.endswith("_back")
+        if is_back:
+            stem = stem[:-5]
+        if (f.is_file() and is_back == back and f.suffix.lower() in (".jpg", ".jpeg", ".tif", ".tiff")
+                and pattern.search(stem) and (BACKS in f.parts) == back):
+            return f
+    return None
+
+
 def rename_batch(catalog, old, new):
     """Give every photo of batch `old` the name `new` (an existing batch's name merges the two), then
     refile them: folders, file names and the Batch tag follow. Returns the number of photos moved."""
-    with catalog.lock:
-        catalog.db.execute("UPDATE photos SET batch = ? WHERE batch = ?", (new, old))
-        catalog.db.commit()
+    _set_for(catalog, _batch_ids(catalog, old), "batch", new)
     return organize(catalog)
 
 
@@ -295,9 +342,7 @@ def set_batch_year(catalog, batch, year, month=None):
     """Give every photo of a batch a year, and optionally a month 1-12 (empty year = back to the
     automatic rules)."""
     value = f"{year}-{int(month):02d}" if year and month else str(year or "")
-    with catalog.lock:
-        catalog.db.execute("UPDATE photos SET year_manual = ? WHERE batch = ?", (value, batch))
-        catalog.db.commit()
+    _set_for(catalog, _batch_ids(catalog, batch), "year_manual", value)
     return organize(catalog)
 
 
@@ -339,16 +384,23 @@ def organize(catalog):
         snippet = slug(r.get("back_text") or "", 40)
         when = f"{year}-{manual_month(r)}" if year and source == "set by you" and manual_month(r) else str(year or "")
         base = "_".join(p for p in (when or "undated", slug(batch, 30), r["id"], snippet) if p)
-        front = root / r["path"]
+        front = root / (r.get("path") or "")
+        if not front.is_file():  # moved by hand, or the catalogue lost track: look for it by its id
+            found = _find_file(root, r["id"])
+            if not found:
+                problems.append((r["id"], f"its file isn't at {r.get('path')} and wasn't found elsewhere"))
+                continue
+            front = found
         new_front = dest / f"{base}{front.suffix.lower()}"
         back = root / r["back_path"] if r.get("back_path") else None
+        if back and not back.is_file():
+            back = _find_file(root, r["id"], back=True) or back
         new_back = root / BACKS / f"{base}_back{back.suffix.lower()}" if back else None
-        unchanged = (new_front == front and new_back == back and r["status"] == "filed" and r.get("meta") == META
+        unchanged = (new_front == front == root / r["path"] and new_back == back and r["status"] == "filed"
+                     and r.get("meta") == META
                      and str(year or "") == (r.get("year") or "") and source == (r.get("year_source") or ""))
         if unchanged:
             continue
-        if not front.exists():
-            continue  # moved or deleted by hand; leave the row alone
         dest.mkdir(parents=True, exist_ok=True)
         cur_front, cur_back = front, back
         meta_ok = True
