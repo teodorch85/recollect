@@ -46,12 +46,17 @@ def find_photos(img, dpi, reference=None, refine=True):
     contours, _ = cv2.findContours(filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contours = _split_touching(contours, filled.shape, _gap_lines(img, dpi))
 
+    rects = _rects(contours, dpi)
+    return reading_order([_refine(img, r, dpi, lid) for r in rects] if refine else rects, dpi)
+
+
+def _rects(contours, dpi):
+    """Rotated rects (full resolution) of the print-sized contours found on the work copy."""
     scale = dpi / WORK_DPI
-    min_side = MIN_SIDE_IN * WORK_DPI
     rects = []
     for c in contours:
         (cx, cy), (w, h), a = cv2.minAreaRect(c)
-        if min(w, h) < min_side:
+        if min(w, h) < MIN_SIDE_IN * WORK_DPI:
             continue
         # Keep the correction angle small (within ±45°) whatever OpenCV's convention.
         while a <= -45:
@@ -60,10 +65,13 @@ def find_photos(img, dpi, reference=None, refine=True):
         while a > 45:
             a -= 90
             w, h = h, w
-        r = ((cx * scale, cy * scale), (w * scale, h * scale), a)
-        rects.append(_refine(img, r, dpi, lid) if refine else r)
-    # Reading order: rows top-to-bottom (centres within 1.5" share a row), then left-to-right.
-    rects.sort(key=lambda r: r[0][1])
+        rects.append(((cx * scale, cy * scale), (w * scale, h * scale), a))
+    return rects
+
+
+def reading_order(rects, dpi):
+    """Rows top-to-bottom (centres within 1.5" share a row), then left-to-right."""
+    rects = sorted(rects, key=lambda r: r[0][1])
     rows = []
     for r in rects:
         if rows and r[0][1] - rows[-1][0][0][1] < 1.5 * dpi:
@@ -238,26 +246,92 @@ MIN_GAP_MM = 3.0   # closer than this, two prints may be taken for one
 EDGE_MM = 2.0      # the scanner can't see the last mm or so of the glass
 
 
+PAPER_LEVELS = 3      # paper reads at least this much brighter than the lid (backs: about +5)
+PICTURE_SHARE = 0.10  # a print with less picture than this is showing its back
+
+
+def find_paper(img, dpi, reference):
+    """Rects of white paper on the glass, e.g. prints lying back-side down.
+
+    The photo detector looks for pictures and gets lost on white backs (it boxes watermark text),
+    but paper reads a few levels brighter than the lid, with a thin shadow line at its edges.
+    """
+    if reference is None:
+        return []
+    work = _to_work(img, dpi)
+    g = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
+    ref = cv2.cvtColor(cv2.resize(reference, (work.shape[1], work.shape[0]), interpolation=cv2.INTER_AREA),
+                       cv2.COLOR_BGR2GRAY)
+    k = max(3, int(0.06 * WORK_DPI) | 1)
+    g = cv2.morphologyEx(g, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))  # hide text
+    diff = cv2.medianBlur(cv2.subtract(g, ref), k)  # brighter than the lid; darker (shadows) -> 0
+    mask = (diff >= PAPER_LEVELS).astype(np.uint8) * 255
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    filled = np.zeros_like(mask)
+    cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)  # watermark holes become paper again
+    filled = cv2.morphologyEx(filled, cv2.MORPH_OPEN, np.ones((9, 9), np.uint8))
+    contours, _ = cv2.findContours(filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return reading_order(_rects(contours, dpi), dpi)
+
+
+def picture_share(img, rect, dpi):
+    """Share of a print's area that is picture (colour or mid/dark tones) rather than blank paper;
+    thin text and lab codes on a back don't count."""
+    piece = _to_work(crop(img, rect, dpi, inset_mm=3), dpi)
+    if piece.size == 0:
+        return 0.0
+    hsv = cv2.cvtColor(piece, cv2.COLOR_BGR2HSV)
+    picture = ((hsv[..., 1] > 50) | (hsv[..., 2] < 170)).astype(np.uint8)
+    picture = cv2.morphologyEx(picture, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))  # drop text strokes
+    return float(picture.mean())
+
+
+def find_backs(img, dpi, reference):
+    """Prints lying back-side up to the glass, as rects. Empty when every print shows its picture."""
+    return [r for r in find_paper(img, dpi, reference) if picture_share(img, r, dpi) < PICTURE_SHARE]
+
+
+def inside(point, rect):
+    return cv2.pointPolygonTest(cv2.boxPoints(rect).astype(np.float32), tuple(map(float, point)), False) >= 0
+
+
 def check_placement(rects, shape, dpi):
-    """Problems a scan would have with these prints: ([messages], {indices of prints involved})."""
+    """Problems a scan would have with these prints: ([short messages], {indices of prints involved})."""
     mm = dpi / 25.4
     boxes = [cv2.boxPoints(r).astype(np.float32) for r in rects]
-    problems, bad = [], set()
+    edge, close, overlap = [], [], []
     h, w = shape[:2]
     for i, b in enumerate(boxes):
         if (b.min(axis=0) < EDGE_MM * mm).any() or b[:, 0].max() > w - EDGE_MM * mm or b[:, 1].max() > h - EDGE_MM * mm:
-            problems.append(f"print {i + 1} is at the edge of the glass, move it in")
-            bad.add(i)
+            edge.append(i)
     for i in range(len(boxes)):
         for j in range(i + 1, len(boxes)):
             # nearest corner of one print to the outline of the other (exact for rectangles)
-            gap = min(min(cv2.pointPolygonTest(boxes[j], tuple(map(float, pt)), True) * -1 for pt in boxes[i]),
-                      min(cv2.pointPolygonTest(boxes[i], tuple(map(float, pt)), True) * -1 for pt in boxes[j]))
-            if gap < MIN_GAP_MM * mm:
-                what = "overlap" if gap <= 0 else f"are only {gap / mm:.0f} mm apart"
-                problems.append(f"prints {i + 1} and {j + 1} {what}, leave about 1 cm")
-                bad.update((i, j))
+            gap = min(min(-cv2.pointPolygonTest(boxes[j], tuple(map(float, pt)), True) for pt in boxes[i]),
+                      min(-cv2.pointPolygonTest(boxes[i], tuple(map(float, pt)), True) for pt in boxes[j]))
+            if gap <= 0:
+                overlap.append((i, j))
+            elif gap < MIN_GAP_MM * mm:
+                close.append((i, j))
+    problems = []
+    if edge:
+        problems.append(f"{print_names(edge)} {'touches' if len(edge) == 1 else 'touch'} the edge of the glass")
+    if overlap:
+        problems.append(_pairs(overlap) + " overlap")
+    if close:
+        problems.append(_pairs(close) + " are too close (leave ~1 cm)")
+    bad = set(edge) | {i for pair in overlap + close for i in pair}
     return problems, bad
+
+
+def _pairs(pairs):
+    return "prints " + ", ".join(f"{i + 1} and {j + 1}" for i, j in pairs)
+
+
+def print_names(idx):
+    nums = [str(i + 1) for i in idx]
+    return ("print " if len(nums) == 1 else "prints ") + (", ".join(nums[:-1]) + " and " + nums[-1] if len(nums) > 1 else nums[0])
 
 
 def draw_overlay(img, rects, labels=None, max_side=1400, alert=()):
