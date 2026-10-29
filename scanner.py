@@ -115,3 +115,54 @@ def _scan(dpi, gray, region, background):
     ih, iw = min(img.shape[0], full_h - y), min(img.shape[1], full_w - x)
     bed[y:y + ih, x:x + iw] = img[:ih, :iw]
     return bed
+
+
+# Restart Windows' scanner service and reconnect the scanner's USB device, as if it had been
+# unplugged and plugged in again. Exit codes: 0 done, 2 no Epson scanner found, 1 anything else.
+RESET_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+try {
+    $devices = @(Get-PnpDevice -PresentOnly | Where-Object {
+        $_.Class -eq 'Image' -and $_.FriendlyName -match 'EPSON|Perfection' })
+    if ($devices.Count -eq 0) { Start-Service stisvc; exit 2 }
+    Stop-Service stisvc -Force
+    foreach ($d in $devices) {
+        Disable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false
+        Start-Sleep -Seconds 2
+        Enable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false
+    }
+    Start-Sleep -Seconds 2
+    Start-Service stisvc
+    exit 0
+} catch {
+    try { Start-Service stisvc } catch {}
+    exit 1
+}
+"""
+
+
+def reset_scanner():
+    """Run RESET_SCRIPT as administrator (Windows asks for permission) and wait for it."""
+    import base64
+    import win32event
+    import win32process
+    import pywintypes
+    from win32com.shell import shell, shellcon
+    encoded = base64.b64encode(RESET_SCRIPT.encode("utf-16-le")).decode("ascii")
+    try:
+        info = shell.ShellExecuteEx(fMask=shellcon.SEE_MASK_NOCLOSEPROCESS, lpVerb="runas",
+                                    lpFile="powershell.exe", nShow=0,
+                                    lpParameters=f"-NoProfile -ExecutionPolicy Bypass -EncodedCommand {encoded}")
+    except pywintypes.error as e:
+        if e.winerror == 1223:  # ERROR_CANCELLED: "No" in the Windows permission prompt
+            raise ScannerError("Reset cancelled: Windows needs your permission to restart the scanner.") from None
+        raise ScannerError(f"Couldn't start the reset ({e.strerror}).") from None
+    handle = info["hProcess"]
+    win32event.WaitForSingleObject(handle, 60_000)
+    code = win32process.GetExitCodeProcess(handle)
+    handle.Close()
+    if code == 2:
+        raise ScannerError("Windows doesn't see the scanner. Check it is switched on and the USB cable is "
+                           "plugged in, then try again.")
+    if code != 0:
+        raise ScannerError("The reset didn't finish. Switch the scanner off, wait 10 seconds and switch it on.")

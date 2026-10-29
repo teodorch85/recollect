@@ -34,14 +34,15 @@ import ocr
 import organizer
 import settings_window
 from version import __version__
-from scanner import ScannerError, scan_bed
+from scanner import ScannerError, reset_scanner, scan_bed
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_FILE = APP_DIR / "settings.json"
 REFERENCE_FILE = APP_DIR / "empty_bed.png"
 # title of the Windows notification when each job finishes
 JOB_TITLES = {"_do_fronts": "Fronts scanned", "_do_backs": "Backs read, photos filed", "_do_preview": "Preview ready",
-              "_do_find_duplicates": "Duplicate check finished", "_do_calibrate": "Scanner calibrated"}
+              "_do_find_duplicates": "Duplicate check finished", "_do_calibrate": "Scanner calibrated",
+              "_do_reset_scanner": "Scanner reset"}
 UPDATE_CHECK_MS = 60_000  # how often to look for a newer version in this folder
 PREVIEW_DPI = 150  # quick look at the bed: about 10 s, enough to find the prints
 
@@ -441,6 +442,11 @@ class App:
                                   "the glass, close the lid, then press OK.\n(Takes about 15 seconds.)"):
             self.calibrate()
 
+    def reset_scanner(self):
+        if self.busy:
+            return
+        self._run(self._do_reset_scanner, "Resetting the scanner… (allow it in the Windows prompt)")
+
     def calibrate(self):
         if self.busy:
             return
@@ -621,7 +627,8 @@ class App:
                 self.cancelling.clear()
                 if kind == "error":
                     self._refresh()
-                    self.status.set("⚠ " + payload)
+                    tip = "" if self._job == "Scanner reset" else " Still stuck? Settings ▸ Scanning ▸ Reset scanner."
+                    self.status.set("⚠ " + payload + tip)
                     self._notify("Scanner problem", payload)
                 else:
                     view, message, *then = payload  # then: optional follow-up on the UI thread
@@ -648,6 +655,11 @@ class App:
         cv2.imwrite(str(REFERENCE_FILE), img)
         self.reference = img
         return img, "Calibrated. Place prints face-down with ~1 cm gaps, close the lid, press Space."
+
+    def _do_reset_scanner(self):
+        reset_scanner()
+        return None, ("Scanner reset. Wait until its light stops flashing (up to a minute), then carry on. "
+                      "If it keeps flashing, switch it off, wait 10 seconds and switch it on.")
 
     def _do_fronts(self):
         dpi = int(self.dpi_var.get())
