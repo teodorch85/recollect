@@ -3,6 +3,13 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.10.0 — 2026-10-29
+- Rename batch… (Organize): pick a batch, type its new name; folders, file names and the Batch
+  tag follow. Using another batch's name merges the two. If it is the label you're scanning
+  with, that changes too.
+- Suggest with Claude: looks at up to 6 of the batch's photos and the writing on their backs and
+  proposes a short name in the same language (uses the auto-rotate API key; about 2 cents).
+
 ## 1.9.0 — 2026-10-29
 - Month for a batch: Organize ▸ Set year and month for batch. The month goes into the photos'
   date taken (Immich sorts them by it) and their file names (1994-07_…); folders stay Year / Batch.
