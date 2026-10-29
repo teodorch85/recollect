@@ -10,6 +10,7 @@ from tkinter import messagebox, ttk
 import enhance
 import notify
 import organizer
+import rotate
 import updater
 from version import __version__
 
@@ -192,12 +193,56 @@ class SettingsWindow:
         self._row(card, "Unsharp mask", "Sharpens the scan like Epson Scan 2.",
                   self._choice(a.sharpen_var, list(enhance.SHARPEN_LEVELS)))
         self._row(card, "Color restoration", "Brings back colours of faded prints.", self._switch(a.restore_var))
+        card = self._card("Auto-rotate")
+        self._row(card, "Turn photos upright", "Claude looks at each new scan and turns sideways or upside-down "
+                                               "photos the right way up. About 1 cent a photo, paid with your "
+                                               "Anthropic API key.", self._switch(a.rotate_var))
+        self.key_state = tk.StringVar()
+        self._row(card, "Anthropic API key", self.key_state, self._key_box)
+        self._show_key_state()
         card = self._card("File")
         self._row(card, "Format", "JPEG for everyday use; TIFF keeps every detail but is several times larger.",
                   self._choice(a.fmt_var, ["JPEG", "TIFF"]))
         self._row(card, "JPEG quality", "100 is the most faithful (about 20 MB for a large print); 95 looks the "
                                         "same at about a third of the size.",
                   self._choice(a.quality_var, [90, 95, 100]))
+
+    def _key_box(self, parent):
+        box = tk.Frame(parent, background=CARD)
+        self.key_var = tk.StringVar()
+        ttk.Entry(box, textvariable=self.key_var, show="•", width=22).pack(side="left")
+        ttk.Button(box, text="Save", command=self._save_key).pack(side="left", padx=(4, 0))
+        ttk.Button(box, text="Test", command=self._test_key).pack(side="left", padx=(4, 0))
+        return box
+
+    def _show_key_state(self, note=""):
+        try:
+            saved = bool(rotate.get_key())
+        except Exception:
+            saved = False
+        self.key_state.set(note or ("Saved in Windows Credential Manager. Paste a new one to replace it, or save "
+                                    "an empty box to remove it." if saved else
+                                    "Create one at console.anthropic.com ▸ API keys, paste it here, press Save."))
+
+    def _save_key(self):
+        key = self.key_var.get().strip()
+        if key and not key.startswith("sk-ant-"):
+            self._show_key_state("That doesn't look like an Anthropic API key (they start with sk-ant-).")
+            return
+        rotate.set_key(key)
+        self.key_var.set("")
+        self._show_key_state("Key saved. Press Test to check it." if key else "Key removed.")
+
+    def _test_key(self):
+        key = self.key_var.get().strip() or rotate.get_key()
+        if not key:
+            self._show_key_state("Paste a key first.")
+            return
+        self._show_key_state("Testing…")
+        self.win.update_idletasks()
+        problem = rotate.test_key(key)
+        self._show_key_state(problem or ("The key works." + ("" if self.key_var.get().strip() == "" else
+                                                             " Press Save to keep it.")))
 
     def _page_notifications(self):
         a = self.app

@@ -40,7 +40,7 @@ jobs:
           pip install -r requirements.txt pyinstaller
           pyinstaller --noconfirm --windowed --name ReCollect --icon ReCollect.ico `
             --add-data "ReCollect.ico;." --add-data "ReCollect.png;." --add-data "CHANGELOG.md;." `
-            --collect-all winrt --collect-all pyexiv2 photo_scanner.py
+            --collect-all winrt --collect-all pyexiv2 --collect-submodules anthropic photo_scanner.py
 
       - name: Self-test
         if: steps.v.outputs.exists == 'False'

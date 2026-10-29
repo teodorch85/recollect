@@ -33,6 +33,7 @@ import enhance
 import notify
 import ocr
 import organizer
+import rotate
 import settings_window
 import updater
 from version import __version__
@@ -74,6 +75,7 @@ DEFAULTS = {
     "notify": True,         # popup when a job finishes
     "flash": True,          # flash the taskbar button when the window isn't in front
     "check_updates": True,
+    "auto_rotate": False,   # ask Claude which way is up (needs an API key)
     "shortcuts_for": "",    # the ReCollect.exe the Desktop and Start menu shortcuts point to
 }
 
@@ -171,9 +173,10 @@ class App:
         self.notify_var = tk.BooleanVar(value=s["notify"])
         self.flash_var = tk.BooleanVar(value=s["flash"])
         self.updates_var = tk.BooleanVar(value=s["check_updates"])
+        self.rotate_var = tk.BooleanVar(value=s["auto_rotate"])
         for var in (self.out_var, self.dpi_var, self.back_dpi_var, self.sharpen_var, self.fmt_var,
                     self.quality_var, self.restore_var, self.backs_var, self.notify_var, self.flash_var,
-                    self.updates_var):
+                    self.updates_var, self.rotate_var):
             var.trace_add("write", lambda *a: self._settings_changed())
 
     def _settings_changed(self):
@@ -182,7 +185,8 @@ class App:
         self._save_settings()
         fmt = "TIFF" if self.fmt_var.get() == "TIFF" else f"JPEG {self.quality_var.get()}"
         backs = f", backs {self.back_dpi_var.get()} dpi" if self.backs_var.get() else ", no backs"
-        self.summary_var.set(f"Fronts {self.dpi_var.get()} dpi{backs}, {fmt}.\nSaving to {self.out_var.get()}")
+        turn = ", auto-rotate" if self.rotate_var.get() else ""
+        self.summary_var.set(f"Fronts {self.dpi_var.get()} dpi{backs}, {fmt}{turn}.\nSaving to {self.out_var.get()}")
 
     def open_settings(self):
         if self._settings_win and self._settings_win.win.winfo_exists():
@@ -196,7 +200,8 @@ class App:
         for var, key in ((self.dpi_var, "front_dpi"), (self.back_dpi_var, "back_dpi"), (self.sharpen_var, "sharpen"),
                          (self.fmt_var, "format"), (self.quality_var, "jpeg_quality"),
                          (self.restore_var, "restore_color"), (self.backs_var, "scan_backs"),
-                         (self.notify_var, "notify"), (self.flash_var, "flash"), (self.updates_var, "check_updates")):
+                         (self.notify_var, "notify"), (self.flash_var, "flash"), (self.updates_var, "check_updates"),
+                         (self.rotate_var, "auto_rotate")):
             var.set(DEFAULTS[key])
         self._backs_toggled()
 
@@ -442,7 +447,8 @@ class App:
                       sharpen=self.sharpen_var.get(), restore_color=bool(self.restore_var.get()),
                       scan_backs=bool(self.backs_var.get()), batch=self.batch_var.get(),
                       notify=bool(self.notify_var.get()), flash=bool(self.flash_var.get()),
-                      check_updates=bool(self.updates_var.get()), shortcuts_for=self.s["shortcuts_for"])
+                      check_updates=bool(self.updates_var.get()), auto_rotate=bool(self.rotate_var.get()),
+                      shortcuts_for=self.s["shortcuts_for"])
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             SETTINGS_FILE.write_text(json.dumps(self.s, indent=2), encoding="utf-8")
@@ -729,6 +735,16 @@ class App:
         self.reference = img
         return img, "Calibrated. Place prints face-down with ~1 cm gaps, close the lid, press Space."
 
+    def _orient(self, photos):
+        """Claude's answer per photo (None where there is none) and the first problem, if any."""
+        if not self.rotate_var.get():
+            return [None] * len(photos), None
+        key = rotate.get_key()
+        if not key:
+            return [None] * len(photos), "no API key (Settings ▸ Image)"
+        self.events.put(("note", f"Checking which way is up ({len(photos)} photo{'s' if len(photos) > 1 else ''})…"))
+        return rotate.orient_all(key, photos)
+
     def _do_reset_scanner(self):
         reset_scanner()
         return None, ("Scanner reset. Wait until its light stops flashing (up to a minute), then carry on. "
@@ -753,13 +769,21 @@ class App:
         scanned = datetime.now().isoformat(timespec="seconds")
         self.bed, stamps = [], 0
         known = [(r["id"], r["fingerprint"]) for r in cat.rows("fingerprint IS NOT NULL AND fingerprint != ''")]
+        photos = []
         for i, r in enumerate(rects):
+            self._stop_point()  # nothing saved yet
+            self._progress(0.6 + 0.15 * i / len(rects))
+            photos.append(enhance.process_front(detect.crop(img, r, dpi), dpi, self.s["sharpen"], self.s["restore_color"]))
+        turns, turn_problem = self._orient(photos)
+        self._stop_point()
+        for i, (r, photo, answer) in enumerate(zip(rects, photos, turns)):
             if self.cancelling.is_set():
                 self._drop_bed()  # undo the fronts of this bed saved so far
                 raise Cancelled
-            self._progress(0.6 + 0.4 * i / len(rects))
+            self._progress(0.8 + 0.2 * i / len(rects))
             pid = f"{first + i:05d}"
-            photo = enhance.process_front(detect.crop(img, r, dpi), dpi, self.s["sharpen"], self.s["restore_color"])
+            turned = answer["turn_clockwise"] if answer and answer["confidence"] != "low" else 0
+            photo = rotate.turn(photo, turned)
             path = out / f"{pid}{ext}"
             save_image(path, photo, dpi, self.s["format"], self.s["jpeg_quality"])
             size_cm, fmt = organizer.print_size(photo.shape[1], photo.shape[0], dpi)
@@ -772,7 +796,8 @@ class App:
             cat.upsert(pid, status="scanning", batch=self.batch_var.get().strip(), scanned=scanned,
                        bed=f"{first:05d}", dpi=dpi, size_cm=size_cm, print_format=fmt, date_stamp=stamp,
                        back_status="pending", path=self._rel(path), back_path="",
-                       fingerprint=prints, duplicate_of=dup)
+                       fingerprint=prints, duplicate_of=dup, rotated=turned,
+                       orientation=f"{answer['confidence']}: {answer['reason']}" if answer else "")
             known.append((pid, prints))
             self.bed.append({"id": pid, "rect": r, "dpi": dpi, "dup": dup})
         if self.cancelling.is_set():  # pressed while the last photo was being saved
@@ -782,6 +807,11 @@ class App:
         dups = [i for i, p in enumerate(self.bed) if p["dup"]]
         view = detect.draw_overlay(img, rects, labels, alert=dups)
         took = f"{time.time() - t:.0f}s" + (f", {stamps} with a camera date" if stamps else "")
+        n_turned = sum(1 for a in turns if a and a["confidence"] != "low" and a["turn_clockwise"])
+        if n_turned:
+            took += f", {n_turned} turned upright"
+        if turn_problem:
+            took += f"; not turned: {turn_problem}"
         warn = ""
         if dups:
             warn = (f"⚠ {len(dups)} scanned before (red, “= original”): "
@@ -1079,6 +1109,9 @@ def _selftest():
     from winrt.windows.ui.notifications import ToastNotificationManager  # noqa: F401
     from win32com.shell import shell  # noqa: F401
     import win32com.client  # noqa: F401
+    import win32cred  # noqa: F401
+    import anthropic
+    anthropic.Anthropic(api_key="test").beta.messages  # loads the SDK's lazily imported parts
     assert ICON_FILE.exists() and (APP_DIR / "ReCollect.png").exists() and (APP_DIR / "CHANGELOG.md").exists()
 
 
@@ -1102,6 +1135,11 @@ def _already_running():
 
 
 if __name__ == "__main__":
+    try:  # HTTPS (GitHub, Claude) trusts what Windows trusts, like the browser does
+        import truststore
+        truststore.inject_into_ssl()
+    except ImportError:
+        pass
     if "--selftest" in sys.argv:
         try:
             _selftest()

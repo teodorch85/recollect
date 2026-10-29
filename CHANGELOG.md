@@ -3,6 +3,13 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.8.0 — 2026-10-29
+- Auto-rotate (Settings ▸ Image): Claude looks at each new front scan and turns sideways or
+  upside-down photos the right way up before they are saved, so the camera-date reader and the
+  duplicate finder see them upright too. About 1 cent a photo, with your own Anthropic API key
+  (kept in Windows Credential Manager, never in a file). Photos with no clear "up" stay as they
+  are and get the tag "Check orientation". Off until you turn it on.
+
 ## 1.7.2 — 2026-10-29
 - Fixed: Check now / Update now failed with an SSL certificate error. ReCollect.exe now checks
   GitHub's certificate with Windows' own certificate store, like the browser does.
