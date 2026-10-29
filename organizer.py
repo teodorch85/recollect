@@ -37,9 +37,11 @@ INBOX, BACKS, UNKNOWN = "_inbox", "_backs", "Unknown year"
 # status: scanning (back step not done) -> ready -> filed
 FIELDS = ["id", "status", "batch", "scanned", "bed", "dpi", "size_cm", "print_format", "back_status",
           "back_text", "back_lab", "paper", "date_stamp", "year_manual", "year", "year_source", "path",
-          "back_path", "organized", "meta", "description"]
+          "back_path", "organized", "meta", "description", "fingerprint", "duplicate_of", "distinct_from"]
 # description = what organize() last wrote as the photo's description (so it knows what it may clear)
-META = "3"  # bump when the metadata written into photos changes, so organize() rewrites it everywhere
+# fingerprint = duplicates.fingerprints() of the front; duplicate_of = id of the photo it repeats;
+# distinct_from = ids you marked "not a duplicate" of this one (space separated)
+META = "4"  # bump when the metadata written into photos changes, so organize() rewrites it everywhere
 
 # Common print sizes in cm; the format hints at the era (e.g. 9x13 in the 70s-80s, 10x15 from the 90s).
 PRINT_FORMATS = [(9, 9), (9, 13), (10, 10), (10, 15), (11, 15), (13, 13), (13, 18), (15, 20), (15, 21),
@@ -200,6 +202,9 @@ def _write_metadata(path, row, year, source):
     if row.get("back_text"):
         tags.append("Back text")
         keywords.append("Back text")
+    if row.get("duplicate_of"):
+        tags.append("Duplicate")
+        keywords.append("Duplicate")
     description = row.get("back_text") or ""
     metadata.write(path, description, tags, keywords, date, replaces=row.get("description"))
     return description
@@ -308,6 +313,37 @@ def organize(catalog):
             if d.name not in (INBOX, BACKS) and d.parent.name not in (INBOX, BACKS) and not any(d.iterdir()):
                 d.rmdir()
     return moved
+
+
+def remove_photo(catalog, pid):
+    """Send a photo and its back scan to the Recycle Bin (so it can be restored) and forget it."""
+    from win32com.shell import shell, shellcon
+    row = catalog.rows("id = ?", (pid,))
+    if not row:
+        return
+    for rel in (row[0].get("path"), row[0].get("back_path")):
+        f = catalog.root / rel if rel else None
+        if f and f.exists():
+            shell.SHFileOperation((0, shellcon.FO_DELETE, str(f), None, shellcon.FOF_ALLOWUNDO |
+                                   shellcon.FOF_NOCONFIRMATION | shellcon.FOF_SILENT | shellcon.FOF_NOERRORUI,
+                                   None, None))
+            _remove_empty(f.parent, catalog.root)
+    catalog.delete(pid)
+    with catalog.lock:  # photos that pointed at it as their original no longer have one
+        catalog.db.execute("UPDATE photos SET duplicate_of = NULL, meta = NULL WHERE duplicate_of = ?", (pid,))
+        catalog.db.commit()
+    catalog.export_csv()
+
+
+def keep_both(catalog, a, b):
+    """You said a and b are different photos: never pair them again."""
+    for x, y in ((a, b), (b, a)):
+        row = catalog.rows("id = ?", (x,))[0]
+        distinct = set((row.get("distinct_from") or "").split()) | {y}
+        dup = row.get("duplicate_of")
+        catalog.upsert(x, distinct_from=" ".join(sorted(distinct)),
+                       **({"duplicate_of": None, "meta": None} if dup == y else {}))
+    organize(catalog)  # drops the Duplicate tag from the files
 
 
 def _remove_empty(folder, root):

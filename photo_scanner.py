@@ -25,6 +25,7 @@ from PIL import Image, ImageTk
 
 import datestamp
 import detect
+import duplicates
 import enhance
 import ocr
 import organizer
@@ -34,6 +35,7 @@ from scanner import ScannerError, scan_bed
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_FILE = APP_DIR / "settings.json"
 REFERENCE_FILE = APP_DIR / "empty_bed.png"
+PREVIEW_DPI = 150  # quick look at the bed: about 10 s, enough to find the prints
 ICON_FILE = APP_DIR / "ReCollect.ico"
 DEFAULTS = {
     "output": str(Path.home() / "Pictures" / "PhotoScans"),
@@ -87,6 +89,8 @@ class App:
         root.bind("<space>", lambda e: self._space(e))
         root.bind("<n>", lambda e: self._key_skip(e))
         root.bind("<N>", lambda e: self._key_skip(e))
+        root.bind("<p>", lambda e: self._key_preview(e))
+        root.bind("<P>", lambda e: self._key_preview(e))
         root.after(100, self._poll)
         self._refresh()
         if self.reference is None:
@@ -146,6 +150,7 @@ class App:
         links.grid(row=2, column=0, columnspan=3, sticky="we", pady=(6, 0))
         ttk.Button(links, text="Open photos folder", command=self._open_folder).pack(side="left", fill="x", expand=True)
         ttk.Button(links, text="Open catalog (Excel)", command=self._open_catalog).pack(side="left", fill="x", expand=True, padx=(4, 0))
+        ttk.Button(org, text="Find duplicates…", command=self.find_duplicates).grid(row=3, column=0, columnspan=3, sticky="we", pady=(4, 0))
         org.columnconfigure(0, weight=1)
 
         # scanning controls at the bottom of the column, next to the preview they act on
@@ -153,6 +158,8 @@ class App:
         btns.pack(side="bottom", fill="x")
         style = ttk.Style()
         style.configure("Big.TButton", font=("Segoe UI", 14, "bold"), padding=10)
+        self.preview_btn = ttk.Button(btns, text="Preview: check placement  [P]", command=self.preview)
+        self.preview_btn.pack(fill="x", pady=(0, 6))
         self.main_btn = ttk.Button(btns, style="Big.TButton", command=self.main_action)
         self.main_btn.pack(fill="x")
         row = ttk.Frame(btns)
@@ -161,6 +168,8 @@ class App:
         self.skip_btn.pack(side="left", fill="x", expand=True)
         self.redo_btn = ttk.Button(row, text="Redo fronts", command=self.redo_fronts)
         self.redo_btn.pack(side="left", padx=(4, 0))
+        self.dup_btn = ttk.Button(btns, text="Remove duplicates from this bed", command=self.remove_bed_duplicates)
+        self.dup_btn.pack(fill="x", pady=(4, 0))
         self.count_var = tk.StringVar()
         ttk.Label(btns, textvariable=self.count_var, font=("Segoe UI", 11)).pack(anchor="w", pady=(6, 0))
 
@@ -193,6 +202,10 @@ class App:
         if not self._typing(event):  # a space typed in the batch label must not start a scan
             self.main_action()
 
+    def _key_preview(self, event):
+        if not self._typing(event):
+            self.preview()
+
     def _key_skip(self, event):
         if not self._typing(event):
             self.skip_backs()
@@ -209,6 +222,9 @@ class App:
         self._refresh()
 
     def _refresh(self):
+        has_dups = not self.busy and self.state == "back" and any(p.get("dup") for p in self.bed)
+        self.dup_btn.config(state="normal" if has_dups else "disabled")
+        self.preview_btn.config(state="normal" if not self.busy and self.state == "front" else "disabled")
         if self.busy:
             self.main_btn.config(state="disabled")
             self.skip_btn.config(state="disabled")
@@ -335,6 +351,30 @@ class App:
         else:
             self._run(self._do_backs, "Scanning backs…")
 
+    def preview(self):
+        if self.busy or self.state != "front":
+            return
+        self._run(self._do_preview, "Preview scan…")
+
+    def remove_bed_duplicates(self):
+        """Throw away the fronts just scanned that repeat photos already in the library."""
+        if self.busy or self.state != "back":
+            return
+        dups = [p for p in self.bed if p.get("dup")]
+        for p in dups:
+            organizer.remove_photo(self._catalog(), p["id"])
+        self.bed = [p for p in self.bed if not p.get("dup")]
+        if not self.bed:
+            self.state = "front"
+        self._refresh()
+        self.status.set(f"Removed {len(dups)} duplicate(s) (in the Recycle Bin). "
+                        + ("Flip the other prints IN THE SAME SPOT and press Space." if self.bed else
+                           "Place the next prints and press Space."))
+
+    def find_duplicates(self):
+        if not self.busy:
+            self._run(self._do_find_duplicates, "Looking for duplicates…")
+
     def skip_backs(self):
         if self.busy or self.state != "back":
             return
@@ -384,12 +424,14 @@ class App:
                     self._refresh()
                     self.status.set("⚠ " + payload)
                 else:
-                    view, message = payload
+                    view, message, *then = payload  # then: optional follow-up on the UI thread
                     self._refresh()
                     if view is not None:
                         self._show(view)
                     if message:
                         self.status.set(message)
+                    for fn in then:
+                        fn()
         except queue.Empty:
             pass
         self.root.after(100, self._poll)
@@ -411,6 +453,7 @@ class App:
         out, ext, first, cat = self._out(), self._ext(), self._next_id(), self._catalog()
         scanned = datetime.now().isoformat(timespec="seconds")
         self.bed, stamps = [], 0
+        known = [(r["id"], r["fingerprint"]) for r in cat.rows("fingerprint IS NOT NULL AND fingerprint != ''")]
         for i, r in enumerate(rects):
             pid = f"{first + i:05d}"
             photo = enhance.process_front(detect.crop(img, r, dpi), dpi, self.s["sharpen"], self.s["restore_color"])
@@ -422,22 +465,86 @@ class App:
             except Exception:  # only a hint for the year: never lose a scan over it
                 stamp = ""
             stamps += bool(stamp)
+            prints, dup = self._duplicate_check(photo, known)
             cat.upsert(pid, status="scanning", batch=self.batch_var.get().strip(), scanned=scanned,
                        bed=f"{first:05d}", dpi=dpi, size_cm=size_cm, print_format=fmt, date_stamp=stamp,
-                       back_status="pending", path=self._rel(path), back_path="")
-            self.bed.append({"id": pid, "rect": r, "dpi": dpi})
-        view = detect.draw_overlay(img, rects, [p["id"] for p in self.bed])
+                       back_status="pending", path=self._rel(path), back_path="",
+                       fingerprint=prints, duplicate_of=dup)
+            known.append((pid, prints))
+            self.bed.append({"id": pid, "rect": r, "dpi": dpi, "dup": dup})
+        labels = [p["id"] + (f" = {p['dup']}" if p["dup"] else "") for p in self.bed]
+        dups = [i for i, p in enumerate(self.bed) if p["dup"]]
+        view = detect.draw_overlay(img, rects, labels, alert=dups)
         took = f"{time.time() - t:.0f}s" + (f", {stamps} with a camera date" if stamps else "")
+        warn = ""
+        if dups:
+            warn = (f"⚠ {len(dups)} scanned before (red, “= original”): "
+                    + ("press “Remove duplicates” to drop them. " if self.backs_var.get() else
+                       "kept and tagged Duplicate; review them with Find duplicates. "))
         if self.backs_var.get():
             self.state = "back"
-            return view, (f"Saved {len(rects)} fronts ({took}). Check the outlines: one box per print? "
+            return view, (f"Saved {len(rects)} fronts ({took}). {warn}Check the outlines: one box per print? "
                           "Then flip each print IN THE SAME SPOT and press Space.  (N = skip backs, "
                           "Redo fronts = boxes wrong)")
         for p in self.bed:
             cat.upsert(p["id"], back_status="not scanned")
         summary = self._file_bed()
         self.bed = []
-        return view, f"Saved {len(rects)} photos ({took}). {summary}. Place the next prints and press Space."
+        return view, f"Saved {len(rects)} photos ({took}). {warn}{summary}. Place the next prints and press Space."
+
+    def _duplicate_check(self, photo, known):
+        """(fingerprints of this front, id of the library photo it repeats or None)."""
+        try:
+            prints = duplicates.fingerprints(photo)
+            match = duplicates.best_match(photo, prints, known, self._load_photo)
+        except Exception:  # a hint only: never lose a scan over it
+            return None, None
+        if not match:
+            return prints, None
+        row = self._catalog().rows("id = ?", (match[0],))
+        return prints, (row[0].get("duplicate_of") or match[0]) if row else match[0]
+
+    def _load_photo(self, pid):
+        row = self._catalog().rows("id = ?", (pid,))
+        return duplicates.read_image(self._catalog().root / row[0]["path"]) if row and row[0].get("path") else None
+
+    def _do_preview(self):
+        img = scan_bed(PREVIEW_DPI)
+        rects = detect.find_photos(img, PREVIEW_DPI, self.reference, refine=False)
+        if not rects:
+            return detect.draw_overlay(img, []), "Preview: no prints found on the glass."
+        problems, bad = detect.check_placement(rects, img.shape, PREVIEW_DPI)
+        view = detect.draw_overlay(img, rects, alert=bad)
+        found = f"Preview: {len(rects)} print{'s' if len(rects) > 1 else ''} found. "
+        if problems:
+            return view, found + "⚠ " + "; ".join(problems).capitalize() + ". Fix it and press P again."
+        return view, found + "Placement looks good. If that's the right number, press Space to scan."
+
+    def _do_find_duplicates(self):
+        cat = self._catalog()
+        rows = cat.rows("status IN ('ready', 'filed')")
+        for i, r in enumerate(rows):  # photos scanned before this feature have no fingerprint yet
+            if not r.get("fingerprint"):
+                if i % 10 == 0:
+                    self.events.put(("note", f"Fingerprinting older photos… {i}/{len(rows)}"))
+                img = duplicates.read_image(cat.root / r["path"])
+                if img is not None:
+                    r["fingerprint"] = duplicates.fingerprints(img)
+                    cat.upsert(r["id"], fingerprint=r["fingerprint"])
+        pairs = duplicates.find_all(rows, self._load_photo, lambda i, n: self.events.put(
+            ("note", f"Comparing photos… {i}/{n}")))
+        changed = False
+        for dup, orig, _ in pairs:
+            row = next(r for r in rows if r["id"] == dup)
+            if row.get("duplicate_of") != orig:
+                cat.upsert(dup, duplicate_of=orig, meta=None)  # tag it Duplicate in the file too
+                changed = True
+        if changed:
+            organizer.organize(cat)
+        if not pairs:
+            return None, f"No duplicates among {len(rows)} photos."
+        return (None, f"Found {len(pairs)} duplicate(s) among {len(rows)} photos.",
+                lambda: DuplicateReview(self, [(d, o) for d, o, _ in pairs]))
 
     def _do_backs(self):
         # Backs are only read for text, so scan just the strip the prints occupy:
@@ -479,6 +586,75 @@ class App:
         f = to_dpi / from_dpi
         (cx, cy), (w, h), a = rect
         return (cx * f, cy * f), (w * f, h * f), a
+
+
+class DuplicateReview:
+    """Window that shows each duplicate next to its original; you choose which to keep."""
+
+    def __init__(self, app, pairs):
+        self.app, self.pairs, self.i, self.gone = app, pairs, -1, set()
+        self.win = tk.Toplevel(app.root)
+        self.win.title("Duplicates")
+        self.win.transient(app.root)
+        ui = app.ui
+        self.side = int(420 * ui)  # each picture fits in this square
+        self.win.geometry(f"{int(920 * ui)}x{int(640 * ui)}")
+        self.title = tk.StringVar()
+        ttk.Label(self.win, textvariable=self.title, font=("Segoe UI", 12), padding=8).pack(anchor="w")
+        row = ttk.Frame(self.win, padding=(8, 0))
+        row.pack(fill="both", expand=True)
+        self.cols = []
+        for side in ("left", "right"):
+            col = ttk.Frame(row)
+            col.pack(side="left", fill="both", expand=True, padx=4)
+            img = tk.Label(col, background="#333")
+            img.pack(fill="both", expand=True)
+            info = tk.StringVar()
+            ttk.Label(col, textvariable=info, wraplength=self.side, padding=(0, 4)).pack(anchor="w")
+            ttk.Button(col, text="Delete this one", command=lambda s=side: self._delete(s)).pack(fill="x")
+            self.cols.append((img, info))
+        bar = ttk.Frame(self.win, padding=8)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="Different photos: keep both", command=self._keep_both).pack(side="left")
+        ttk.Button(bar, text="Decide later", command=self._next).pack(side="left", padx=6)
+        ttk.Button(bar, text="Close", command=self.win.destroy).pack(side="right")
+        self._next()
+
+    def _next(self):
+        self.i += 1
+        while self.i < len(self.pairs) and self.gone & set(self.pairs[self.i]):
+            self.i += 1  # one of the two was deleted meanwhile
+        if self.i >= len(self.pairs):
+            self.win.destroy()
+            self.app._refresh()
+            self.app.status.set("Duplicates reviewed. Deleted photos are in the Recycle Bin.")
+            return
+        cat = self.app._catalog()
+        original, dup = self.pairs[self.i][1], self.pairs[self.i][0]
+        self.title.set(f"{self.i + 1} of {len(self.pairs)}: the right one looks like a second scan of the left one.")
+        self.photos = []
+        for (img, info), pid in zip(self.cols, (original, dup)):
+            row = cat.rows("id = ?", (pid,))[0]
+            bgr = duplicates.read_image(cat.root / row["path"])
+            if bgr is not None:
+                pic = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+                pic.thumbnail((self.side, self.side))
+                self.photos.append(ImageTk.PhotoImage(pic))
+                img.config(image=self.photos[-1])
+            facts = [pid, row.get("size_cm") and f"{row['size_cm']} cm", row.get("dpi") and f"{row['dpi']} dpi",
+                     row.get("year") or "undated", row.get("batch")]
+            info.set("  ·  ".join(f for f in facts if f) + f"\n{row['path']}")
+        self.ids = (original, dup)
+
+    def _delete(self, side):
+        pid = self.ids[0 if side == "left" else 1]
+        organizer.remove_photo(self.app._catalog(), pid)
+        self.gone.add(pid)
+        self._next()
+
+    def _keep_both(self):
+        organizer.keep_both(self.app._catalog(), *self.ids)
+        self._next()
 
 
 def _own_taskbar_entry():
