@@ -20,7 +20,7 @@ import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import cv2
 import numpy as np
@@ -35,6 +35,7 @@ import ocr
 import organizer
 import namer
 import naming
+import review
 import rotate
 import settings_window
 import split
@@ -135,6 +136,7 @@ class App:
         self.bed = []                 # [{id, rect, dpi}] for prints on the glass right now
         self.reference = cv2.imread(str(REFERENCE_FILE)) if REFERENCE_FILE.exists() else None
         self._cat = None
+        self._review = None  # the Review photos window, while open
         self.restart_requested = False
         self._offered = None  # version already offered, so it is announced once
         self._release = None  # (version, zip url, page) of a newer release on GitHub
@@ -279,9 +281,9 @@ class App:
         ttk.Button(links, text="Open catalog (Excel)", command=self._open_catalog).pack(side="left", fill="x", expand=True, padx=(4, 0))
         tools = ttk.Frame(org)
         tools.grid(row=4, column=0, columnspan=4, sticky="we", pady=(4, 0))
-        ttk.Button(tools, text="Find duplicates…", command=self.find_duplicates).pack(side="left", fill="x", expand=True)
-        ttk.Button(tools, text="Split photo…", command=self.split_photo).pack(side="left", fill="x", expand=True,
-                                                                           padx=(4, 0))
+        ttk.Button(tools, text="Review photos…", command=self.open_review).pack(side="left", fill="x", expand=True)
+        ttk.Button(tools, text="Find duplicates…", command=self.find_duplicates).pack(side="left", fill="x",
+                                                                                   expand=True, padx=(4, 0))
         org.columnconfigure(0, weight=1)
 
         # scanning controls at the bottom of the column, next to the preview they act on
@@ -451,20 +453,29 @@ class App:
             if rows is None:
                 self._clickable = None
             return
-        row, pid, cat = rows[i], c["pids"][i], self._catalog()
+        message = self.turn_photo(c["pids"][i], delta)
+        then = " Then flip the prints and press Space." if self.state == "back" else ""
+        self.status.set(message.replace("Only the orientation tag changes.",
+                                        "Click again to keep turning, right-click to turn back (the arrow shows "
+                                        "its top). Only the orientation tag changes." + then))
+
+    def turn_photo(self, pid, delta):
+        """Turn a photo a quarter turn: only its EXIF orientation changes, not its pixels. Returns what
+        happened, for the status line."""
+        cat = self._catalog()
+        rows = cat.rows("id = ?", (pid,))
+        if not rows:
+            return f"{pid} is no longer in the library."
+        row = rows[0]
         if Path(row.get("path") or "").suffix.lower() not in (".jpg", ".jpeg"):
-            self.status.set(f"{pid} is a TIFF: turning in the preview works for JPEG photos only. "
-                            "Turn it in your photo app instead.")
-            return
+            return f"{pid} is a TIFF: turning in ReCollect works for JPEG photos only. Turn it in your photo app instead."
         turn = (int(row.get("turn") or 0) + delta) % 360
         cat.upsert(pid, turn=turn, meta="")  # meta="": organize() writes the orientation into the file
         if row["status"] in ("ready", "filed"):
             organizer.organize(cat, only={pid})  # waiting for backs: written when it is filed
-        self._draw_clickable()
-        then = " Then flip the prints and press Space." if self.state == "back" else ""
-        self.status.set(" ".join(t for t in (
-            f"{pid} turned {turn}° clockwise (the arrow shows its top). Click again to keep turning, right-click "
-            f"to turn back. Only the orientation tag changes.{then}", organizer.problem_text()) if t))
+        self._refresh_clickable()
+        return " ".join(t for t in (f"{pid} turned {turn}° clockwise. Only the orientation tag changes.",
+                                    organizer.problem_text()) if t)
 
     def _render(self):
         """Fit the last bed preview inside the preview area (called again on window resize)."""
@@ -602,43 +613,32 @@ class App:
             message += f" Some couldn't be checked: {problem}"
         return None, " ".join(t for t in (message, organizer.problem_text()) if t), self._refresh_clickable
 
-    def split_photo(self):
-        """Ask which photo holds two prints, then show where it would be cut."""
-        if self.busy:
-            messagebox.showinfo("Split photo", "Wait for the current job to finish first.")
+    def open_review(self):
+        if self._review and self._review.win.winfo_exists():
+            self._review.win.lift()
             return
-        answer = simpledialog.askstring("Split photo", "Number or file name of the photo that holds two prints "
-                                        "(e.g. 00006):", parent=self.root)
-        numbers = re.findall(r"\d+", answer or "")
-        if not numbers:
-            return
-        pid = numbers[-1][-5:].zfill(5)  # "6", "00006" or "2007-01_wedding_00006.jpg"
-        cat = self._catalog()
-        row = cat.rows("id = ?", (pid,))
-        if not row or row[0]["status"] not in ("ready", "filed"):
-            messagebox.showinfo("Split photo", f"There is no photo {pid} in the library." if not row else
-                                f"{pid} is still waiting for its back: scan or skip the backs first.")
-            return
-        row = row[0]
-        front = duplicates.read_image(cat.root / row["path"], raw=True)  # as stored, no EXIF turn
-        if front is None:
-            messagebox.showinfo("Split photo", f"The file of {pid} couldn't be read: {row['path']}")
-            return
-        back = None
-        if row.get("back_path") and (cat.root / row["back_path"]).is_file():
-            back = duplicates.read_image(cat.root / row["back_path"], raw=True)
-        # as it lay on the glass: the back was cut from the same place, so one line cuts both
-        glass = rotate.turn(front, (360 - int(row.get("rotated") or 0)) % 360)
-        SplitPhoto(self, row, glass, back)
+        batch = self.fix_batch_var.get().strip()
+        known = [b for b in organizer.batches(self._catalog()) if organizer.same_batch(b, batch)]
+        self._review = review.Review(self, known[0] if known else None)
+
+    def delete_photo(self, pid):
+        organizer.remove_photo(self._catalog(), pid)
+        self._refresh()
+        self._refresh_clickable()
+        return f"{pid} is in the Recycle Bin."
+
+    def start_split(self, row, glass, back, line):
+        self._split = (row, glass, back, line)
+        self._run(self._do_split, f"Splitting {row['id']} into two photos…")
 
     def _do_split(self):
-        row, glass, back, axis, start, end = self._split
+        row, glass, back, line = self._split
         cat, pid = self._catalog(), row["id"]
         dpi, rotated = int(row.get("dpi") or 600), int(row.get("rotated") or 0)
         front_path = cat.root / row["path"]
         fmt = "TIFF" if front_path.suffix.lower() in (".tif", ".tiff") else "JPEG"
-        photos = [rotate.turn(p, rotated) for p in split.cut(glass, axis, start, end)]
-        backs = split.cut_plain(back, axis, (start + end) / 2) if back is not None else (None, None)
+        photos = [rotate.turn(p, rotated) for p in split.cut(glass, line, dpi)]
+        backs = split.cut_back(back, line) if back is not None else (None, None)
         back_dpi = dpi * back.shape[1] / glass.shape[1] if back is not None else dpi  # same spot on the glass
         found = []
         for i, (photo, bk) in enumerate(zip(photos, backs)):  # read everything first: Cancel leaves no trace
@@ -698,8 +698,9 @@ class App:
             kept = [p for p, info in ((pid, found[0]), (new_id, found[1])) if info["back_status"] == "saved"]
             backs_note = ("Both backs kept." if len(kept) == 2 else
                           f"Back kept for {kept[0]}; the other was blank." if kept else "Both backs were blank.")
-        return None, " ".join(t for t in (f"{pid} split into {pid} and {new_id}. {backs_note}",
-                                          organizer.problem_text()) if t), self._refresh_clickable
+        message = " ".join(t for t in (f"{pid} split into {pid} and {new_id}. {backs_note}",
+                                       organizer.problem_text()) if t)
+        return None, message, self._refresh_clickable, lambda: self._review and self._review.changed(message)
 
     def _refresh_clickable(self):
         if self._clickable:
@@ -1364,75 +1365,6 @@ class RenameBatch:
         name, reason = answer
         self.name.set(name)
         self.note.set(f"Claude suggests this ({reason}). Edit it if you like, then press Rename.")
-
-
-class SplitPhoto:
-    """Window: where to cut a scan that holds two prints. Shows the suggested cut; a click moves it."""
-
-    def __init__(self, app, row, glass, back):
-        self.app, self.row, self.glass, self.back = app, row, glass, back
-        self.axis, self.start, self.end = split.find_cut(glass)
-        self.win = tk.Toplevel(app.root)
-        self.win.title(f"Split photo {row['id']}")
-        self.win.transient(app.root)
-        self.win.resizable(False, False)
-        side = int((380 if back is not None else 560) * app.ui)
-        pics = ttk.Frame(self.win, padding=8)
-        pics.pack()
-        self.pics = []
-        for img, label in ((glass, "Front"), (back, "Back")):
-            if img is None:
-                continue
-            col = ttk.Frame(pics)
-            col.pack(side="left", padx=4)
-            ttk.Label(col, text=label).pack(anchor="w")
-            f = side / max(img.shape[:2])
-            small = cv2.resize(img, (max(1, round(img.shape[1] * f)), max(1, round(img.shape[0] * f))),
-                               interpolation=cv2.INTER_AREA)
-            canvas = tk.Canvas(col, width=small.shape[1], height=small.shape[0], highlightthickness=0,
-                               cursor="crosshair")
-            canvas.pack()
-            photo = ImageTk.PhotoImage(Image.fromarray(cv2.cvtColor(small, cv2.COLOR_BGR2RGB)))
-            canvas.create_image(0, 0, anchor="nw", image=photo)
-            canvas.bind("<Button-1>", lambda e, c=canvas: self._click(e, c))
-            self.pics.append((canvas, photo))
-        note = ("Its back is stored too: both are cut along the same line." if back is not None else
-                "No back is stored for this photo (it was blank or not scanned): only the front is cut.")
-        ttk.Label(self.win, text="As the prints lay on the glass. The red line is where it will be cut: click "
-                                 "to move it.\n" + note, wraplength=int(760 * app.ui), justify="left",
-                  padding=(8, 0)).pack(anchor="w")
-        bar = ttk.Frame(self.win, padding=8)
-        bar.pack(fill="x")
-        ttk.Button(bar, text="Cut the other way", command=self._other_way).pack(side="left")
-        ttk.Button(bar, text="Cancel", command=self.win.destroy).pack(side="right")
-        ttk.Button(bar, text="Split into two photos", command=self._ok).pack(side="right", padx=4)
-        self.win.bind("<Escape>", lambda e: self.win.destroy())
-        self._draw()
-
-    def _draw(self):
-        at = (self.start + self.end) / 2
-        for canvas, _ in self.pics:
-            canvas.delete("cut")
-            w, h = int(canvas["width"]), int(canvas["height"])
-            xy = (at * w, 0, at * w, h) if self.axis == "x" else (0, at * h, w, at * h)
-            canvas.create_line(*xy, fill="red", width=3, dash=(8, 4), tags="cut")
-
-    def _click(self, event, canvas):
-        at = event.x / int(canvas["width"]) if self.axis == "x" else event.y / int(canvas["height"])
-        self.axis, self.start, self.end = split.find_cut(self.glass, self.axis, near=min(max(at, 0.02), 0.98))
-        self._draw()
-
-    def _other_way(self):
-        self.axis, self.start, self.end = split.find_cut(self.glass, "y" if self.axis == "x" else "x")
-        self._draw()
-
-    def _ok(self):
-        if self.app.busy:
-            messagebox.showinfo("Split photo", "Wait for the current job to finish first.", parent=self.win)
-            return
-        self.app._split = (self.row, self.glass, self.back, self.axis, self.start, self.end)
-        self.win.destroy()
-        self.app._run(self.app._do_split, f"Splitting {self.row['id']} into two photos…")
 
 
 class DuplicateReview:
