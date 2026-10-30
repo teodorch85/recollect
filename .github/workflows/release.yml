@@ -1,5 +1,6 @@
 # Every push to main whose version.py names a version not yet released builds ReCollect.exe and
 # publishes it as a GitHub release (ReCollect-<version>.zip). ReCollect.exe updates itself from these.
+# The tests run on every push; a failing test stops the release.
 name: Release
 
 on:
@@ -29,15 +30,20 @@ jobs:
           exit 0
 
       - uses: actions/setup-python@v5
-        if: steps.v.outputs.exists == 'False'
         with:
           python-version: "3.12"
+
+      - name: Tests
+        shell: pwsh
+        run: |
+          pip install -r requirements.txt pytest
+          python -m pytest -q
 
       - name: Build ReCollect.exe
         if: steps.v.outputs.exists == 'False'
         shell: pwsh
         run: |
-          pip install -r requirements.txt pyinstaller
+          pip install pyinstaller
           pyinstaller --noconfirm --windowed --name ReCollect --icon ReCollect.ico `
             --add-data "ReCollect.ico;." --add-data "ReCollect.png;." --add-data "CHANGELOG.md;." `
             --collect-all winrt --collect-all pyexiv2 --collect-submodules anthropic photo_scanner.py

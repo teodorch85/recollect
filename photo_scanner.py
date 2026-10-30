@@ -523,9 +523,9 @@ class App:
         if self.batch_var.get().strip() == old:  # the next scans join the renamed batch
             self.batch_var.set(new)
             label = " The batch label for new scans was changed too."
+        self._refresh()  # before the message: it resets the status line
         self.status.set(" ".join(t for t in (f"Batch “{old}” is now “{new}”: {moved} photo(s) moved.{label}",
                                              organizer.batch_report(cat, new), organizer.problem_text()) if t))
-        self._refresh()
 
     def _show_batch_date(self):
         """Fill in the year and month already set for the chosen batch."""
@@ -543,10 +543,10 @@ class App:
         cat = self._catalog()
         moved = organizer.set_batch_year(cat, batch, year, month)
         when = f"{self.fix_month_var.get()} {year}" if month else year
+        self._refresh()  # before the message: it resets the status line
         self.status.set(" ".join(t for t in (
             f"Batch “{batch}” → {when or 'automatic year'}: {moved} photo(s) moved.",
             organizer.batch_report(cat, batch), organizer.problem_text()) if t))
-        self._refresh()
 
     def _open_folder(self):
         os.startfile(self._root())
