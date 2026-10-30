@@ -983,6 +983,8 @@ class App:
         self.busy = True
         self._refresh()
         self.status.set(message)
+        if self._review:
+            self._review.working(message)
         threading.Thread(target=self._worker, args=(fn,), daemon=True).start()
 
     def _worker(self, fn):
@@ -1004,6 +1006,8 @@ class App:
                     continue
                 if kind == "note":  # progress message from a job that is still running
                     self.status.set(payload)
+                    if self._review:
+                        self._review.working(payload)
                     continue
                 if kind == "progress":
                     self._phase, self.bar["value"] = None, payload
@@ -1013,6 +1017,9 @@ class App:
                     self._phase = (a, b, time.time(), secs)
                     continue
                 self.busy = False
+                if self._review:  # the job's own message follows (Review.changed) for a split
+                    self._review.idle("Cancelled." if kind == "cancelled" else
+                                      "⚠ " + payload if kind == "error" else "Done.")
                 self._phase = None
                 self.bar["value"] = 1.0 if kind == "done" else 0
                 if kind == "cancelled":

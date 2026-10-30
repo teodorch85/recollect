@@ -3,6 +3,10 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.15.1 — 2026-10-30
+- Review photos shows when ReCollect is working (e.g. splitting a photo): a moving bar with what it
+  is doing, and its buttons wait until the job is done.
+
 ## 1.15.0 — 2026-10-30
 - Review photos… (Organize): every photo of a batch as thumbnails, the chosen one large with its
   back, year, file and back text. Turn it left or right, split it, delete it (to the Recycle Bin)

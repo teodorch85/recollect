@@ -106,9 +106,12 @@ class Review:
         ]
         for b in self.buttons:
             b.pack(side="left", padx=(0, 4))
+        status = ttk.Frame(right)
+        status.pack(fill="x", pady=(6, 0))
+        self.spinner = ttk.Progressbar(status, mode="indeterminate", length=int(120 * self.ui))
         self.note = tk.StringVar(value="←/→ previous and next photo.")
-        ttk.Label(right, textvariable=self.note, foreground="#555", wraplength=int(760 * self.ui),
-                  justify="left").pack(anchor="w", pady=(6, 0))
+        ttk.Label(status, textvariable=self.note, foreground="#555", wraplength=int(620 * self.ui),
+                  justify="left").pack(side="left", anchor="w")
 
         for key, fn in (("<Left>", lambda: self.go(-1)), ("<Right>", lambda: self.go(1)),
                         ("<Up>", lambda: self.go(-COLUMNS)), ("<Down>", lambda: self.go(COLUMNS)),
@@ -300,6 +303,28 @@ class Review:
         path = self.app._catalog().root / self.rows[self.i]["path"]
         if os.name == "nt":
             subprocess.Popen(["explorer", "/select,", str(path)])
+
+    def working(self, message):
+        """A job runs in the main window (e.g. a split): say so, and wait for it."""
+        if not self.win.winfo_exists():
+            return
+        if not self.spinner.winfo_ismapped():
+            self.spinner.pack(side="left", padx=(0, 8), before=self.spinner.master.winfo_children()[-1])
+            self.spinner.start(15)
+            for b in self.buttons[:4]:
+                b.state(["disabled"])
+            self.win.config(cursor="watch")
+        self.note.set(message)
+
+    def idle(self, message):
+        if not self.win.winfo_exists():
+            return
+        self.spinner.stop()
+        self.spinner.pack_forget()
+        for b in self.buttons[:4]:
+            b.state(["!disabled"])
+        self.win.config(cursor="")
+        self.note.set(message)
 
     def changed(self, note=""):
         """Called by the app after it changed photos (e.g. a split): show them as they are now."""
