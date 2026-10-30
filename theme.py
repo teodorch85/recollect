@@ -17,12 +17,21 @@ def apply(root):
     except Exception:  # theme missing or broken: Windows' own look still works
         ttk.Style(root).theme_use("vista" if "vista" in ttk.Style(root).theme_names() else "clam")
     root.configure(background=PAGE)
+    # The theme sizes its fonts in pixels, which don't grow on a scaled display (125%, 150%): points do
+    for name, size in (("SunValleyCaptionFont", 10), ("SunValleyBodyFont", 11), ("SunValleyBodyStrongFont", 11),
+                       ("SunValleyBodyLargeFont", 13)):
+        try:
+            root.tk.call("font", "configure", name, "-size", size)
+        except Exception:  # not the Sun Valley theme
+            pass
     s = ttk.Style(root)
-    s.configure("TLabel", font=(FONT, 10))
-    s.configure("Muted.TLabel", foreground=MUTED, font=(FONT, 9))
-    s.configure("Heading.TLabel", font=(FONT, 11, "bold"))
-    s.configure("Title.TLabel", font=(FONT, 15, "bold"))
-    s.configure("Status.TLabel", font=(FONT, 11))
-    s.configure("Big.Accent.TButton", font=(FONT, 13, "bold"), padding=(10, 10))
-    s.configure("TCheckbutton", font=(FONT, 10))
-    s.configure("Switch.TCheckbutton", font=(FONT, 10))
+    s.configure("TButton", font=(FONT, 11))
+    s.configure("TLabel", font=(FONT, 11))
+    s.configure("Muted.TLabel", foreground=MUTED, font=(FONT, 10))
+    s.configure("Heading.TLabel", font=(FONT, 12, "bold"))
+    s.configure("Title.TLabel", font=(FONT, 16, "bold"))
+    s.configure("Status.TLabel", font=(FONT, 12))
+    s.configure("Big.Accent.TButton", font=(FONT, 14, "bold"), padding=(10, 10))
+    s.configure("TCheckbutton", font=(FONT, 11))
+    s.configure("Switch.TCheckbutton", font=(FONT, 11))
+    root.option_add("*TCombobox*Listbox.font", (FONT, 11))  # the drop-down lists

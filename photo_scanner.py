@@ -185,8 +185,12 @@ class App:
         ttk.Label(head, image=self._logo).pack(side="left")
         ttk.Label(head, text="ReCollect", style="Title.TLabel").pack(side="left", padx=(8, 6))
         ttk.Label(head, text=__version__, style="Muted.TLabel").pack(side="left", pady=(6, 0))
-        ttk.Button(head, text="⚙", width=3, command=self.open_settings).pack(side="right")
-        ttk.Button(head, text="Check for updates", command=self.check_updates_clicked).pack(side="right", padx=4)
+        actions = ttk.Frame(side)
+        actions.pack(fill="x", pady=(int(10 * ui), 0))
+        ttk.Button(actions, text="⚙  Settings  [Ctrl+,]", command=self.open_settings).pack(side="left", fill="x",
+                                                                                     expand=True)
+        ttk.Button(actions, text="Check for updates", command=self.check_updates_clicked).pack(side="left",
+                                                                                            padx=(6, 0))
 
         # packed when an update arrives
         self.update_box = tk.Frame(side, background=theme.ACCENT_SOFT, padx=12, pady=10,
@@ -204,23 +208,21 @@ class App:
         ttk.Button(row, text="Later", command=self.update_box.pack_forget).pack(side="left")
 
         files = ttk.Frame(side)
-        files.pack(fill="x", pady=(int(18 * ui), 0))
+        files.pack(fill="x", pady=(int(14 * ui), 0))
         self._first_box = files
         ttk.Label(files, text="This batch", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(files, text="Batch or box label", style="Muted.TLabel").grid(row=1, column=0, sticky="w",
-                                                                              pady=(6, 2))
+        ttk.Label(files, text="Batch label, with the year if known: “1994 Crete”",
+                  style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 2))
         ttk.Entry(files, textvariable=self.batch_var).grid(row=2, column=0, sticky="we")
-        ttk.Label(files, text="Tip: put the year in it, e.g. “1994 Crete”.",
-                  style="Muted.TLabel").grid(row=3, column=0, sticky="w", pady=(3, 0))
         ttk.Checkbutton(files, text="Scan backs too", variable=self.backs_var, style="Switch.TCheckbutton",
-                        command=self._backs_toggled).grid(row=4, column=0, sticky="w", pady=(10, 0))
+                        command=self._backs_toggled).grid(row=4, column=0, sticky="w", pady=(8, 0))
         self.summary_var = tk.StringVar()
         ttk.Label(files, textvariable=self.summary_var, style="Muted.TLabel", wraplength=int(350 * ui),
                   justify="left").grid(row=5, column=0, sticky="w", pady=(6, 0))
         files.columnconfigure(0, weight=1)
         self._settings_changed()
 
-        ttk.Separator(side).pack(fill="x", pady=int(16 * ui))
+        ttk.Separator(side).pack(fill="x", pady=int(12 * ui))
         org = ttk.Frame(side)
         org.pack(fill="x")
         ttk.Label(org, text="Organize", style="Heading.TLabel").grid(row=0, column=0, columnspan=4, sticky="w")
@@ -251,7 +253,7 @@ class App:
 
         # scanning controls at the bottom of the column, next to the preview they act on
         btns = ttk.Frame(side)
-        btns.pack(side="bottom", fill="x")
+        btns.pack(side="bottom", fill="x", before=head)  # packed before the top: never squeezed
         self.count_var = tk.StringVar()  # the duplicates button shows above it only when the bed has some
         self.dup_btn = ttk.Button(btns, text="Remove duplicates from this bed", command=self.remove_bed_duplicates)
         top_row = ttk.Frame(btns)
@@ -272,12 +274,12 @@ class App:
         self.count_label.pack(anchor="w", pady=(10, 0))
 
         self.bar = ttk.Progressbar(side, maximum=1.0)
-        self.bar.pack(side="bottom", fill="x", pady=(8, 10))
+        self.bar.pack(side="bottom", fill="x", pady=(8, 10), before=head)
         self._phase = None  # (from, to, start time, expected seconds) while a scan is under way
 
         self.status = tk.StringVar()
         status = ttk.Label(side, textvariable=self.status, style="Status.TLabel", padding=(0, 10))
-        status.pack(side="bottom", fill="x")
+        status.pack(side="bottom", fill="x", before=head)
         # rewrap the message to the column width instead of a fixed width
         status.bind("<Configure>", lambda e: status.config(wraplength=max(e.width - 4, 150)))
 

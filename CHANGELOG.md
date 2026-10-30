@@ -3,6 +3,12 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.16.1 — 2026-10-30
+- Larger text on buttons, lists and labels, and it now grows with Windows' display scaling
+  (125%, 150%) like the rest of the window. Settings' small print is larger too.
+- Settings and Check for updates have their own row under the title, so nothing is cut off.
+- On smaller screens the status message and the scan buttons always keep their room.
+
 ## 1.16.0 — 2026-10-30
 - A fresh look: Windows 11 style buttons, switches and lists, and one blue accent for what matters
   (Scan, Update now, the chosen photo).
