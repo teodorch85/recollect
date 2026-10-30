@@ -3,6 +3,11 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.15.3 — 2026-10-30
+- Updates no longer leave old program files behind in the _internal folder: it now holds exactly the
+  files of the version installed. (This starts with the update after this one; to tidy it now,
+  see the README.)
+
 ## 1.15.2 — 2026-10-30
 - After Rename batch or Apply (year and month), the message saying how many photos moved, and why
   any stayed, was replaced at once by the scanning hint; it now stays on screen.

@@ -96,7 +96,10 @@ HELPER = r"""
 param([int]$OldPid, [string]$Source, [string]$Target)
 try { Wait-Process -Id $OldPid -Timeout 60 -ErrorAction SilentlyContinue } catch {}
 Start-Sleep -Milliseconds 500
-robocopy $Source $Target /E /R:10 /W:1 /NFL /NDL /NJH /NJS | Out-Null
+# _internal holds only the program's own files: mirror it, so files the new version no longer has go.
+# (Settings, calibration and photos live elsewhere.) Then the rest, i.e. ReCollect.exe, as before.
+robocopy (Join-Path $Source '_internal') (Join-Path $Target '_internal') /MIR /R:10 /W:1 /NFL /NDL /NJH /NJS | Out-Null
+robocopy $Source $Target /E /XD (Join-Path $Source '_internal') /R:10 /W:1 /NFL /NDL /NJH /NJS | Out-Null
 Start-Process -FilePath (Join-Path $Target 'ReCollect.exe') -WorkingDirectory $Target
 """
 
