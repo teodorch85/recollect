@@ -5,8 +5,8 @@ Workflow per bed:
      an orange camera date printed in a corner ('94 7 15) is read too.
   2. Flip every print over in the same spot, press Space       -> backs are matched by position and
      read with Windows OCR; blank backs are discarded. (Press N instead to skip backs for this bed.)
-  3. Photos are filed at once into <YEAR>/<Batch>/ by simple rules (see organizer.py), with the back
-     text in the filename and everything recorded in photos.db / catalog.csv.
+  3. Photos are filed at once by simple rules (see organizer.py), named by the naming template
+     (default <YEAR>/<Batch>/), with everything recorded in photos.db / catalog.csv.
 """
 import os
 import queue
@@ -206,7 +206,7 @@ class App:
         files.columnconfigure(0, weight=1)
         self._settings_changed()
 
-        org = ttk.LabelFrame(side, text="Organize  (folders: Year / Batch)", padding=6)
+        org = ttk.LabelFrame(side, text="Organize", padding=6)
         org.pack(fill="x", pady=(6, 0))
         ttk.Label(org, text="Set year and month for batch:").grid(row=0, column=0, columnspan=4, sticky="w")
         self.fix_batch_var = tk.StringVar()
@@ -255,9 +255,9 @@ class App:
         self.redo_btn = ttk.Button(row, text="Redo fronts", command=self.redo_fronts)
         self.redo_btn.pack(side="left", padx=(4, 0))
         self.dup_btn = ttk.Button(btns, text="Remove duplicates from this bed", command=self.remove_bed_duplicates)
-        self.dup_btn.pack(fill="x", pady=(4, 0))
-        self.count_var = tk.StringVar()
-        ttk.Label(btns, textvariable=self.count_var, font=("Segoe UI", 11)).pack(anchor="w", pady=(6, 0))
+        self.count_var = tk.StringVar()  # the duplicates button shows above it only when the bed has some
+        self.count_label = ttk.Label(btns, textvariable=self.count_var, font=("Segoe UI", 11))
+        self.count_label.pack(anchor="w", pady=(6, 0))
 
         self.bar = ttk.Progressbar(side, maximum=1.0)
         self.bar.pack(side="bottom", fill="x", pady=(6, 0))
@@ -324,7 +324,10 @@ class App:
 
     def _refresh(self):
         has_dups = not self.busy and self.state == "back" and any(p.get("dup") for p in self.bed)
-        self.dup_btn.config(state="normal" if has_dups else "disabled")
+        if has_dups and not self.dup_btn.winfo_manager():
+            self.dup_btn.pack(fill="x", pady=(4, 0), before=self.count_label)
+        elif not has_dups:
+            self.dup_btn.pack_forget()
         self.preview_btn.config(state="normal" if not self.busy and self.state == "front" else "disabled")
         self.cancel_btn.config(state="normal" if self.busy and not self.cancelling.is_set() else "disabled")
         if self.busy:
