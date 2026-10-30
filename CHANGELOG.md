@@ -3,6 +3,14 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.15.2 — 2026-10-30
+- After Rename batch or Apply (year and month), the message saying how many photos moved, and why
+  any stayed, was replaced at once by the scanning hint; it now stays on screen.
+- Renaming a batch to the name of one whose year you set: the photos joining it take that year
+  (they stayed in Unknown year).
+- Under the hood: the program is split into smaller parts, with 48 automatic tests that run before
+  every release is built (a failing test stops the release).
+
 ## 1.15.1 — 2026-10-30
 - Review photos shows when ReCollect is working (e.g. splitting a photo): a moving bar with what it
   is doing, and its buttons wait until the job is done.
