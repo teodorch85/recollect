@@ -342,7 +342,13 @@ def _find_file(root, pid, back=False):
 def rename_batch(catalog, old, new):
     """Give every photo of batch `old` the name `new` (an existing batch's name merges the two), then
     refile them: folders, file names and the Batch tag follow. Returns the number of photos moved."""
-    _set_for(catalog, _batch_ids(catalog, old), "batch", new)
+    rows = catalog.rows()
+    ids = [r["id"] for r in rows if same_batch(r.get("batch"), old)]
+    dates = {r.get("year_manual") for r in rows if same_batch(r.get("batch"), new) and r["id"] not in ids} - {None, ""}
+    _set_for(catalog, ids, "batch", new)
+    if len(dates) == 1:  # joining a batch whose year you set: the photos joining it take that year too
+        _set_for(catalog, [r["id"] for r in rows if r["id"] in ids and not r.get("year_manual")], "year_manual",
+                 dates.pop())
     return organize(catalog)
 
 
