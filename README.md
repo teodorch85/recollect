@@ -18,6 +18,10 @@ Scan, sort and keep your printed photos with an Epson Perfection V600 on Windows
 
 ReCollect adds itself to the Start menu and Desktop, and offers new versions itself.
 
+Versions before 1.15.3 left old program files in the `_internal` folder at each update. To tidy it
+once: close ReCollect, delete the ReCollect folder (settings, calibration and photos are kept
+elsewhere), and unzip the latest `ReCollect-<version>.zip` in its place.
+
 ## From source
 
 ```
