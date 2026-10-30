@@ -77,7 +77,7 @@ def test_split_keeps_the_auto_rotate_turn(cat):
 
 
 def orientation(cat, pid):
-    meta = pyexiv2.Image(str(cat.root / cat.rows("id = ?", (pid,))[0]["path"]))
+    meta = pyexiv2.ImageData((cat.root / cat.rows("id = ?", (pid,))[0]["path"]).read_bytes())  # Greek folder
     try:
         return meta.read_exif().get("Exif.Image.Orientation")
     finally:
