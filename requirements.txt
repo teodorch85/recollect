@@ -15,3 +15,4 @@ winrt-Windows.Data.Xml.Dom
 truststore
 certifi
 anthropic
+sv-ttk

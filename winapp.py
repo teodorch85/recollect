@@ -88,6 +88,8 @@ def selftest():
     import win32cred  # noqa: F401
     import anthropic
     anthropic.Anthropic(api_key="test").beta.messages  # loads the SDK's lazily imported parts
+    import sv_ttk  # the theme's own files (sv.tcl and its pictures) must be bundled too
+    assert sv_ttk.TCL_THEME_FILE_PATH.exists()
     assert ICON_FILE.exists() and (APP_DIR / "ReCollect.png").exists() and (APP_DIR / "CHANGELOG.md").exists()
 
 

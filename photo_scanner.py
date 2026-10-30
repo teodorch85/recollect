@@ -34,6 +34,7 @@ import naming
 import review
 import rotate
 import settings_window
+import theme
 import updater
 import winapp
 from config import APP_DIR, DEFAULTS, ICON_FILE, REFERENCE_FILE
@@ -76,6 +77,7 @@ class AppJob(library.Job):
 class App:
     def __init__(self, root):
         self.root = root
+        theme.apply(root)
         self.s = config.load_settings()
         self.events = queue.Queue()
         self.busy = False
@@ -170,110 +172,123 @@ class App:
 
     def _build_ui(self):
         # left: a column of settings and buttons; right: the bed preview, filling the rest
-        side = ttk.Frame(self.root, padding=(8, 8, 4, 8), width=int(390 * self.ui))
+        ui = self.ui
+        side = ttk.Frame(self.root, padding=(int(18 * ui), int(14 * ui), int(14 * ui), int(14 * ui)),
+                         width=int(400 * ui))
         side.pack(side="left", fill="y")
         side.pack_propagate(False)  # fixed width; long texts wrap instead of widening it
 
-        self.update_box = tk.Frame(side, background="#E1F5EE", padx=8, pady=6)  # packed when an update arrives
+        head = ttk.Frame(side)
+        head.pack(fill="x")
+        logo = Image.open(APP_DIR / "ReCollect.png").convert("RGBA").resize((int(30 * ui), int(30 * ui)), Image.LANCZOS)
+        self._logo = ImageTk.PhotoImage(logo)
+        ttk.Label(head, image=self._logo).pack(side="left")
+        ttk.Label(head, text="ReCollect", style="Title.TLabel").pack(side="left", padx=(8, 6))
+        ttk.Label(head, text=__version__, style="Muted.TLabel").pack(side="left", pady=(6, 0))
+        ttk.Button(head, text="⚙", width=3, command=self.open_settings).pack(side="right")
+        ttk.Button(head, text="Check for updates", command=self.check_updates_clicked).pack(side="right", padx=4)
+
+        # packed when an update arrives
+        self.update_box = tk.Frame(side, background=theme.ACCENT_SOFT, padx=12, pady=10,
+                                   highlightbackground="#C7DDF2", highlightthickness=1)
         self.update_text = tk.StringVar()
-        tk.Label(self.update_box, textvariable=self.update_text, background="#E1F5EE", foreground="#085041",
-                 font=("Segoe UI", 10, "bold"), wraplength=int(340 * self.ui), justify="left").pack(anchor="w")
-        row = tk.Frame(self.update_box, background="#E1F5EE")
-        row.pack(anchor="w", pady=(4, 0))
-        self.update_btn = ttk.Button(row, text="Restart now", command=self.restart)
+        tk.Label(self.update_box, textvariable=self.update_text, background=theme.ACCENT_SOFT,
+                 foreground=theme.ACCENT_DARK, font=(theme.FONT, 10, "bold"), wraplength=int(330 * ui),
+                 justify="left").pack(anchor="w")
+        row = tk.Frame(self.update_box, background=theme.ACCENT_SOFT)
+        row.pack(anchor="w", pady=(8, 0))
+        self.update_btn = ttk.Button(row, text="Restart now", style="Accent.TButton", command=self.restart)
         self.update_btn.pack(side="left")
         ttk.Button(row, text="What's new", command=lambda: self._whats_new(self._release and self._release[2])
-                   ).pack(side="left", padx=4)
+                   ).pack(side="left", padx=6)
         ttk.Button(row, text="Later", command=self.update_box.pack_forget).pack(side="left")
 
-        files = ttk.LabelFrame(side, text="This batch", padding=6)
-        files.pack(fill="x")
+        files = ttk.Frame(side)
+        files.pack(fill="x", pady=(int(18 * ui), 0))
         self._first_box = files
-        ttk.Label(files, text="Batch / box label:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(files, textvariable=self.batch_var).grid(row=1, column=0, sticky="we")
-        ttk.Label(files, text="tip: put the year in it, e.g. “1994 Crete”",
-                  foreground="#666").grid(row=2, column=0, sticky="w")
-        ttk.Checkbutton(files, text="Scan backs", variable=self.backs_var,
-                        command=self._backs_toggled).grid(row=3, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(files, text="This batch", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(files, text="Batch or box label", style="Muted.TLabel").grid(row=1, column=0, sticky="w",
+                                                                              pady=(6, 2))
+        ttk.Entry(files, textvariable=self.batch_var).grid(row=2, column=0, sticky="we")
+        ttk.Label(files, text="Tip: put the year in it, e.g. “1994 Crete”.",
+                  style="Muted.TLabel").grid(row=3, column=0, sticky="w", pady=(3, 0))
+        ttk.Checkbutton(files, text="Scan backs too", variable=self.backs_var, style="Switch.TCheckbutton",
+                        command=self._backs_toggled).grid(row=4, column=0, sticky="w", pady=(10, 0))
         self.summary_var = tk.StringVar()
-        ttk.Label(files, textvariable=self.summary_var, foreground="#666", wraplength=int(350 * self.ui),
-                  justify="left").grid(row=4, column=0, sticky="w", pady=(4, 0))
-        row = ttk.Frame(files)
-        row.grid(row=5, column=0, sticky="we", pady=(6, 0))
-        ttk.Button(row, text="⚙  Settings…  [Ctrl+,]", command=self.open_settings).pack(side="left", fill="x",
-                                                                                     expand=True)
-        ttk.Button(row, text="Check for updates", command=self.check_updates_clicked).pack(side="left", padx=(4, 0))
+        ttk.Label(files, textvariable=self.summary_var, style="Muted.TLabel", wraplength=int(350 * ui),
+                  justify="left").grid(row=5, column=0, sticky="w", pady=(6, 0))
         files.columnconfigure(0, weight=1)
         self._settings_changed()
 
-        org = ttk.LabelFrame(side, text="Organize", padding=6)
-        org.pack(fill="x", pady=(6, 0))
-        ttk.Label(org, text="Set year and month for batch:").grid(row=0, column=0, columnspan=4, sticky="w")
+        ttk.Separator(side).pack(fill="x", pady=int(16 * ui))
+        org = ttk.Frame(side)
+        org.pack(fill="x")
+        ttk.Label(org, text="Organize", style="Heading.TLabel").grid(row=0, column=0, columnspan=4, sticky="w")
+        ttk.Label(org, text="Year and month of a batch", style="Muted.TLabel").grid(
+            row=1, column=0, columnspan=4, sticky="w", pady=(6, 2))
         self.fix_batch_var = tk.StringVar()
         self.fix_batch = ttk.Combobox(org, textvariable=self.fix_batch_var, postcommand=self._fill_batches)
-        self.fix_batch.grid(row=1, column=0, sticky="we")
+        self.fix_batch.grid(row=2, column=0, sticky="we")
         self.fix_batch.bind("<<ComboboxSelected>>", lambda e: self._show_batch_date())
         self.fix_year_var = tk.StringVar()
-        ttk.Entry(org, textvariable=self.fix_year_var, width=6).grid(row=1, column=1, padx=(4, 0))
+        ttk.Entry(org, textvariable=self.fix_year_var, width=5).grid(row=2, column=1, padx=(6, 0))
         self.fix_month_var = tk.StringVar(value=MONTHS[0])
-        ttk.Combobox(org, textvariable=self.fix_month_var, values=MONTHS, width=5,
-                     state="readonly").grid(row=1, column=2, padx=4)
-        ttk.Button(org, text="Apply", command=self._set_year).grid(row=1, column=3)
-        batch_row = ttk.Frame(org)
-        batch_row.grid(row=2, column=0, columnspan=4, sticky="we", pady=(4, 0))
-        ttk.Button(batch_row, text="Rename batch…", command=self.rename_batch).pack(side="left", fill="x", expand=True)
-        ttk.Button(batch_row, text="Turn upright…", command=self.turn_batch_upright).pack(side="left", fill="x",
-                                                                                        expand=True, padx=(4, 0))
-        links = ttk.Frame(org)
-        links.grid(row=3, column=0, columnspan=4, sticky="we", pady=(6, 0))
-        ttk.Button(links, text="Open photos folder", command=self._open_folder).pack(side="left", fill="x", expand=True)
-        ttk.Button(links, text="Open catalog (Excel)", command=self._open_catalog).pack(side="left", fill="x", expand=True, padx=(4, 0))
-        tools = ttk.Frame(org)
-        tools.grid(row=4, column=0, columnspan=4, sticky="we", pady=(4, 0))
-        ttk.Button(tools, text="Review photos…", command=self.open_review).pack(side="left", fill="x", expand=True)
-        ttk.Button(tools, text="Find duplicates…", command=self.find_duplicates).pack(side="left", fill="x",
-                                                                                   expand=True, padx=(4, 0))
+        ttk.Combobox(org, textvariable=self.fix_month_var, values=MONTHS, width=4,
+                     state="readonly").grid(row=2, column=2, padx=6)
+        ttk.Button(org, text="Apply", command=self._set_year).grid(row=2, column=3)
         org.columnconfigure(0, weight=1)
+        tools = ttk.Frame(side)
+        tools.pack(fill="x", pady=(10, 0))
+        for n, (text, command) in enumerate((("Review photos…", self.open_review),
+                                             ("Rename batch…", self.rename_batch),
+                                             ("Turn upright…", self.turn_batch_upright),
+                                             ("Find duplicates…", self.find_duplicates),
+                                             ("Open photos folder", self._open_folder),
+                                             ("Open catalog (Excel)", self._open_catalog))):
+            ttk.Button(tools, text=text, command=command).grid(row=n // 2, column=n % 2, sticky="we",
+                                                               padx=(0, 6) if n % 2 == 0 else 0, pady=3)
+        tools.columnconfigure((0, 1), weight=1, uniform="tools")
 
         # scanning controls at the bottom of the column, next to the preview they act on
         btns = ttk.Frame(side)
         btns.pack(side="bottom", fill="x")
-        style = ttk.Style()
-        style.configure("Big.TButton", font=("Segoe UI", 14, "bold"), padding=10)
+        self.count_var = tk.StringVar()  # the duplicates button shows above it only when the bed has some
+        self.dup_btn = ttk.Button(btns, text="Remove duplicates from this bed", command=self.remove_bed_duplicates)
         top_row = ttk.Frame(btns)
-        top_row.pack(fill="x", pady=(0, 6))
-        self.preview_btn = ttk.Button(top_row, text="Preview: check placement  [P]", command=self.preview)
+        top_row.pack(fill="x", pady=(0, 8))
+        self.preview_btn = ttk.Button(top_row, text="Preview  [P]", command=self.preview)
         self.preview_btn.pack(side="left", fill="x", expand=True)
         self.cancel_btn = ttk.Button(top_row, text="Cancel  [Esc]", command=self.cancel)
-        self.cancel_btn.pack(side="left", padx=(4, 0))
-        self.main_btn = ttk.Button(btns, style="Big.TButton", command=self.main_action)
+        self.cancel_btn.pack(side="left", padx=(6, 0))
+        self.main_btn = ttk.Button(btns, style="Big.Accent.TButton", command=self.main_action)
         self.main_btn.pack(fill="x")
         row = ttk.Frame(btns)
-        row.pack(fill="x", pady=(6, 0))
+        row.pack(fill="x", pady=(8, 0))
         self.skip_btn = ttk.Button(row, text="No backs for this bed  [N]", command=self.skip_backs)
         self.skip_btn.pack(side="left", fill="x", expand=True)
         self.redo_btn = ttk.Button(row, text="Redo fronts", command=self.redo_fronts)
-        self.redo_btn.pack(side="left", padx=(4, 0))
-        self.dup_btn = ttk.Button(btns, text="Remove duplicates from this bed", command=self.remove_bed_duplicates)
-        self.count_var = tk.StringVar()  # the duplicates button shows above it only when the bed has some
-        self.count_label = ttk.Label(btns, textvariable=self.count_var, font=("Segoe UI", 11))
-        self.count_label.pack(anchor="w", pady=(6, 0))
+        self.redo_btn.pack(side="left", padx=(6, 0))
+        self.count_label = ttk.Label(btns, textvariable=self.count_var, style="Muted.TLabel")
+        self.count_label.pack(anchor="w", pady=(10, 0))
 
         self.bar = ttk.Progressbar(side, maximum=1.0)
-        self.bar.pack(side="bottom", fill="x", pady=(6, 0))
+        self.bar.pack(side="bottom", fill="x", pady=(8, 10))
         self._phase = None  # (from, to, start time, expected seconds) while a scan is under way
 
         self.status = tk.StringVar()
-        status = ttk.Label(side, textvariable=self.status, font=("Segoe UI", 12), padding=(0, 10))
+        status = ttk.Label(side, textvariable=self.status, style="Status.TLabel", padding=(0, 10))
         status.pack(side="bottom", fill="x")
         # rewrap the message to the column width instead of a fixed width
         status.bind("<Configure>", lambda e: status.config(wraplength=max(e.width - 4, 150)))
 
         # Fixed-size area (doesn't grow with the image); the preview is fitted inside it.
-        self.view_area = tk.Frame(self.root, background="#333")
-        self.view_area.pack(side="left", fill="both", expand=True, padx=(4, 8), pady=8)
+        self.view_area = tk.Frame(self.root, background=theme.PREVIEW)
+        self.view_area.pack(side="left", fill="both", expand=True, padx=(0, int(14 * ui)), pady=int(14 * ui))
         self.view_area.pack_propagate(False)
-        self.canvas = tk.Label(self.view_area, background="#333")
+        self.canvas = tk.Label(self.view_area, background=theme.PREVIEW, foreground="#9A9A9A",
+                               font=(theme.FONT, 12), justify="center",
+                               text="Place prints face-down on the glass, about 1 cm apart.\n"
+                                    "Press P to check their placement, or Space to scan.")
         self.canvas.place(relx=0.5, rely=0.5, anchor="center")
         self.canvas.bind("<Button-1>", lambda e: self._click_view(e, 90))  # the photo turns clockwise
         self.canvas.bind("<Button-3>", lambda e: self._click_view(e, -90))
@@ -325,7 +340,7 @@ class App:
     def _refresh(self):
         has_dups = not self.busy and self.state == "back" and any(p.get("dup") for p in self.bed)
         if has_dups and not self.dup_btn.winfo_manager():
-            self.dup_btn.pack(fill="x", pady=(4, 0), before=self.count_label)
+            self.dup_btn.pack(fill="x", pady=(8, 0), before=self.count_label)
         elif not has_dups:
             self.dup_btn.pack_forget()
         self.preview_btn.config(state="normal" if not self.busy and self.state == "front" else "disabled")

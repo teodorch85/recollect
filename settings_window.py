@@ -10,13 +10,11 @@ from tkinter import messagebox, ttk
 import enhance
 import notify
 import naming
-import organizer
 import rotate
 import updater
 from version import __version__
 
-SIDEBAR, PAGE, CARD, BORDER = "#F3F3F3", "#FAFAFA", "#FFFFFF", "#E5E5E5"
-TEXT, MUTED, ACCENT, HOVER = "#1A1A1A", "#666666", "#0F6E56", "#E8E8E8"
+from theme import ACCENT, BORDER, CARD, HOVER, MUTED, PAGE, SIDEBAR, TEXT
 SECTIONS = ("Library", "Scanning", "Image", "Claude", "Notifications", "Updates", "About")
 
 

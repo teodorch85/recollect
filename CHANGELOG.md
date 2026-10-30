@@ -3,6 +3,13 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.16.0 — 2026-10-30
+- A fresh look: Windows 11 style buttons, switches and lists, and one blue accent for what matters
+  (Scan, Update now, the chosen photo).
+- The main window has a header with ReCollect's icon, version, Check for updates and a Settings
+  gear; its sections are clearer, and the empty preview says how to start.
+- Settings and Review photos share the same colours. Review's keys are listed under its buttons.
+
 ## 1.15.4 — 2026-10-30
 - Photo numbers on the bed preview sit on a dark tag in the middle of each print, readable on
   white backs and busy pictures alike; red tags mark duplicates and problems. The arrow showing a
