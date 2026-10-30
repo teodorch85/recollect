@@ -77,7 +77,7 @@ class SettingsWindow:
                 w.bind("<Leave>", lambda e, n=name: self._hover(n, False))
             self.items[name] = (item, bar, label)
         ttk.Button(nav, text="Close  [Esc]", command=self.win.destroy).pack(side="bottom", fill="x", padx=10)
-        tk.Label(nav, text="Changes are saved\nautomatically.", font=("Segoe UI", 9), background=SIDEBAR,
+        tk.Label(nav, text="Changes are saved\nautomatically.", font=("Segoe UI", 10), background=SIDEBAR,
                  foreground=MUTED, justify="left", anchor="w", padx=10).pack(side="bottom", fill="x", pady=(0, 8))
 
         self.body = tk.Frame(self.win, background=PAGE, padx=int(28 * ui), pady=int(20 * ui))
@@ -110,7 +110,7 @@ class SettingsWindow:
     # ---------- building blocks ----------
     def _card(self, heading=None):
         if heading:
-            tk.Label(self.body, text=heading, font=("Segoe UI", 10, "bold"), background=PAGE, foreground=MUTED,
+            tk.Label(self.body, text=heading, font=("Segoe UI", 11, "bold"), background=PAGE, foreground=MUTED,
                      anchor="w").pack(fill="x", pady=(4, 4))
         card = tk.Frame(self.body, background=CARD, highlightbackground=BORDER, highlightthickness=1)
         card.pack(fill="x", pady=(0, 14))
@@ -129,11 +129,11 @@ class SettingsWindow:
             control(row).pack(side="right", padx=(16, 0))
         text = tk.Frame(row, background=CARD)
         text.pack(side="left", fill="x", expand=True)
-        tk.Label(text, text=title, font=("Segoe UI", 10, "bold"), background=CARD, foreground=TEXT,
+        tk.Label(text, text=title, font=("Segoe UI", 11, "bold"), background=CARD, foreground=TEXT,
                  anchor="w").pack(fill="x")
         if desc:
             kind = "textvariable" if isinstance(desc, tk.Variable) else "text"
-            tk.Label(text, **{kind: desc}, font=("Segoe UI", 9), background=CARD, foreground=MUTED, anchor="w",
+            tk.Label(text, **{kind: desc}, font=("Segoe UI", 10), background=CARD, foreground=MUTED, anchor="w",
                      justify="left", wraplength=int(400 * self.ui)).pack(fill="x")
         return row
 
@@ -157,7 +157,7 @@ class SettingsWindow:
         return make
 
     def _note(self, var):
-        tk.Label(self.body, textvariable=var, font=("Segoe UI", 9), background=PAGE, foreground=MUTED,
+        tk.Label(self.body, textvariable=var, font=("Segoe UI", 10), background=PAGE, foreground=MUTED,
                  anchor="w", justify="left", wraplength=int(560 * self.ui)).pack(fill="x")
 
     # ---------- pages ----------
@@ -173,7 +173,7 @@ class SettingsWindow:
         self._row(card, "Folders and file names", "Like Immich's storage template: {{y}} {{MM}} {{MMMM}} {{dd}} "
                   "{{album}} (the batch) {{id}} {{filename}} {{date}}, and {{#if y}}…{{else}}…{{/if}}. "
                   "'/' makes a folder.", self._template_box, below=True)
-        tk.Label(card, textvariable=self.tpl_note, font=("Segoe UI", 9), background=CARD, foreground=ACCENT,
+        tk.Label(card, textvariable=self.tpl_note, font=("Segoe UI", 10), background=CARD, foreground=ACCENT,
                  anchor="w", justify="left", wraplength=int(560 * self.ui), padx=14).pack(fill="x", pady=(0, 10))
         self.tpl_var.trace_add("write", lambda *e: self._preview_template())
         self._preview_template()
