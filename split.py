@@ -1,97 +1,145 @@
 """Split a scan that holds two prints (they lay too close on the glass and were taken for one).
 
-The cut is found in the front: the strip of lid between the two prints is the only line across the
-scan with nothing in it. The back was cut from the same spot on the glass, so it is split at the same
-place; its white paper against the white lid shows no gap of its own.
-Positions are fractions (0-1) of the image's width (axis "x", a vertical cut) or height (axis "y").
+The cut is a straight line, at any slant: prints that touch are rarely square to each other, so the
+lid between them is often a wedge. It is found in the front, where the lid is the only line across
+the scan with nothing in it; then each print is cut out along its own edges, like on the bed.
+The back was cut from the same spot on the glass, so the same line splits it (its white paper against
+the white lid shows no gap of its own).
+A line is two points (x, y) in fractions (0-1) of the image's width and height.
 """
 import cv2
 import numpy as np
 
-WORK_PX = 800      # the gap is looked for in a copy this size
-SEARCH = (0.15, 0.85)  # a cut nearer the edge than this would leave a sliver, not a print
-MAX_TRIM = 0.3     # lid trimmed off a half's edge is at most this share of it
+import detect
+
+WORK_PX = 800          # the gap is looked for in a copy this size
+SLANTS = np.tan(np.radians(np.arange(-15, 15.5, 0.5)))  # how far from straight the gap may run
+SEARCH = (0.12, 0.88)  # a cut nearer the edge than this would leave a sliver, not a print
+BUSY = 12              # brightness step (0-255) per pixel that counts as picture, not lid
 
 
-def _small_gray(img):
+def _work(img):
     f = min(1.0, WORK_PX / max(img.shape[:2]))
-    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
-    return cv2.resize(g, None, fx=f, fy=f, interpolation=cv2.INTER_AREA).astype(np.float32)
+    small = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    return cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), (3, 3), 0), f
 
 
-def _profile(gray, axis):
-    """How much is going on along each line across the image (std of each column for axis x)."""
-    std = gray.std(axis=0 if axis == "x" else 1)
-    return np.convolve(std, np.ones(3) / 3, mode="same")
+def _busy(gray):
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3) / 4
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3) / 4
+    return cv2.dilate((np.hypot(gx, gy) > BUSY).astype(np.uint8), np.ones((3, 3), np.uint8))
 
 
-def _band(std, i):
-    """The run of empty lines around line i: (first, last + 1)."""
-    lo, med = std[i], float(np.median(std))
-    limit = lo + 0.25 * max(med - lo, 1.0)
-    a = b = i
-    while a > 0 and std[a - 1] <= limit:
-        a -= 1
-    while b < len(std) - 1 and std[b + 1] <= limit:
-        b += 1
-    return a, b + 1
-
-
-def find_cut(img, axis=None, near=None):
-    """(axis, start, end): where the gap between the two prints runs, as fractions. axis None tries
-    both ways and keeps the clearer gap; near (a fraction) looks for the gap closest to there."""
-    gray = _small_gray(img)
+def _best_line(busy, near=None):
+    """(score, c, slant) of the emptiest line x = c + slant * (y - h/2) across busy (rows = y)."""
+    h, w = busy.shape
+    ys = np.arange(h)
+    dy = ys - h / 2
+    if near is None:
+        cs = np.arange(int(SEARCH[0] * w), int(SEARCH[1] * w))
     best = None
-    for ax in ((axis,) if axis else ("x", "y")):
-        std = _profile(gray, ax)
-        n = len(std)
-        if near is None:
-            lo, hi = int(SEARCH[0] * n), int(SEARCH[1] * n)
-        else:  # where you clicked, give or take a few lines
-            c = int(near * n)
-            lo, hi = max(0, c - n // 40), min(n, c + n // 40 + 1)
-        i = lo + int(np.argmin(std[lo:hi]))
-        score = std[i] / max(float(np.median(std)), 1.0)  # an empty line stands out from the rest
-        a, b = _band(std, i) if near is None or score < 0.5 else (i, i + 1)
-        if best is None or score < best[0]:
-            best = (score, ax, a / n, b / n)
-    return best[1:]
+    for t in SLANTS:
+        if near is not None:  # lines through (about) the point you clicked
+            c0 = near[0] * w - t * (near[1] * h - h / 2)
+            cs = np.arange(int(c0 - w / 50), int(c0 + w / 50) + 1)
+        xs = np.rint(cs[:, None] + t * dy[None, :]).astype(int)
+        inside = (xs >= 0) & (xs < w)
+        hits = busy[ys[None, :], np.clip(xs, 0, w - 1)]
+        score = (hits * inside).sum(axis=1) / h + (1 - inside.mean(axis=1))  # leaving the image counts as busy
+        i = lo = hi = int(np.argmin(score))
+        while lo > 0 and score[lo - 1] <= score[i] + 0.002:
+            lo -= 1
+        while hi < len(score) - 1 and score[hi + 1] <= score[i] + 0.002:
+            hi += 1
+        mid = (lo + hi) // 2  # middle of the empty band, not its edge
+        if best is None or score[mid] < best[0] - 1e-9:
+            best = (float(score[mid]), float(cs[mid]), float(t))
+    return best
 
 
-def _trim(img, lid_mean, lid_std):
-    """Cut strips of lid off the edges (left by the gap, or by a smaller print beside a bigger one)."""
-    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    h, w = g.shape
-
-    def is_lid(line):
-        return line.std() <= lid_std and abs(line.mean() - lid_mean) <= 12
-
-    top, bottom, left, right = 0, h, 0, w
-    while top < h * MAX_TRIM and is_lid(g[top, left:right]):
-        top += 1
-    while bottom > h * (1 - MAX_TRIM) and is_lid(g[bottom - 1, left:right]):
-        bottom -= 1
-    while left < w * MAX_TRIM and is_lid(g[top:bottom, left]):
-        left += 1
-    while right > w * (1 - MAX_TRIM) and is_lid(g[top:bottom, right - 1]):
-        right -= 1
-    return img[top:bottom, left:right]
+def find_cut(img, near=None):
+    """The line between the two prints: ((x0, y0), (x1, y1)) in fractions. near: (x, y) fraction of a
+    point you clicked: the best line through about there."""
+    busy = _busy(_work(img)[0])
+    h, w = busy.shape
+    down = _best_line(busy, near)  # lines running top to bottom
+    across = _best_line(busy.T, near[::-1] if near else None)  # left to right
+    if down[0] <= across[0]:
+        _, c, t = down
+        return ((c - t * h / 2) / w, 0.0), ((c + t * h / 2) / w, 1.0)
+    _, c, t = across
+    return (0.0, (c - t * w / 2) / h), (1.0, (c + t * w / 2) / h)
 
 
-def cut(img, axis, start, end):
-    """The two prints of a front, without the lid between and around them."""
-    n = img.shape[1] if axis == "x" else img.shape[0]
-    a, b = int(round(start * n)), max(int(round(end * n)), int(round(start * n)) + 1)
-    gap = img[:, a:b] if axis == "x" else img[a:b]
-    g = cv2.cvtColor(gap, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    lines = g.std(axis=0 if axis == "x" else 1)  # each line along the gap
-    lid_mean, lid_std = float(g.mean()), float(np.percentile(lines, 90)) * 1.5 + 3
-    first, second = (img[:, :a], img[:, b:]) if axis == "x" else (img[:a], img[b:])
-    return _trim(first, lid_mean, lid_std), _trim(second, lid_mean, lid_std)
+def line_through(p, q):
+    """The line through two points you dragged between (fractions), reaching the image's edges."""
+    (x0, y0), (x1, y1) = p, q
+    if abs(x1 - x0) < 1e-6 and abs(y1 - y0) < 1e-6:
+        return None
+    if abs(y1 - y0) >= abs(x1 - x0):  # steep: from top edge to bottom edge
+        t = (x1 - x0) / (y1 - y0)
+        return (x0 - t * y0, 0.0), (x0 + t * (1 - y0), 1.0)
+    t = (y1 - y0) / (x1 - x0)
+    return (0.0, y0 - t * x0), (1.0, y0 + t * (1 - x0))
 
 
-def cut_plain(img, axis, at):
-    """The two halves of a back, cut at a fraction (no trimming: only its text matters)."""
-    n = img.shape[1] if axis == "x" else img.shape[0]
-    i = min(max(int(round(at * n)), 1), n - 1)
-    return (img[:, :i], img[:, i:]) if axis == "x" else (img[:i], img[i:])
+def _sides(shape, line):
+    """Masks of the two sides of the line, the left or top one first."""
+    h, w = shape[:2]
+    (x0, y0), (x1, y1) = line
+    yy, xx = np.ogrid[0:h, 0:w]
+    s = (x1 - x0) * w * (yy - y0 * h) - (y1 - y0) * h * (xx - x0 * w) > 0
+    sides = [s, ~s]
+    # left/top first: compare where each side's middle is, along the line's normal
+    first = [(np.nonzero(m)[1].mean() + np.nonzero(m)[0].mean()) if m.any() else 0 for m in sides]
+    return sides if first[0] <= first[1] else sides[::-1]
+
+
+def boxes(img, line, dpi):
+    """Where each print lies, as rotated rects in img's pixels: its own edges, found on its side of the line."""
+    gray, f = _work(img)
+    work_dpi = dpi * f
+    rects = []
+    for side in _sides(gray.shape, line):
+        side_u8 = side.astype(np.uint8) * 255
+        edge = cv2.erode(side_u8, np.ones((5, 5), np.uint8))  # pixels along the cut are lid, or the other print
+        band = (side_u8 > 0) & (edge == 0)
+        lid = float(np.median(gray[band])) if band.any() else float(np.percentile(gray, 95))
+        mask = (cv2.absdiff(gray, np.full_like(gray, int(lid))) > 8).astype(np.uint8) * 255
+        mask |= cv2.dilate(cv2.Canny(gray, 15, 45), np.ones((3, 3), np.uint8))
+        mask &= edge
+        k = max(3, int(0.09 * work_dpi)) | 1
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((k, k), np.uint8))
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        filled = np.zeros_like(mask)
+        cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
+        k = max(3, int(0.15 * work_dpi)) | 1
+        filled = cv2.morphologyEx(filled, cv2.MORPH_OPEN, np.ones((k, k), np.uint8)) & edge
+        contours, _ = cv2.findContours(filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        big = max(contours, key=cv2.contourArea) if contours else None
+        if big is None or cv2.contourArea(big) < 0.3 * side.sum():  # nothing print-like: keep the whole side
+            big = cv2.findNonZero(side_u8)
+        (cx, cy), (w, h), a = cv2.minAreaRect(big)
+        while a <= -45:
+            a, w, h = a + 90, h, w
+        while a > 45:
+            a, w, h = a - 90, h, w
+        rects.append(detect._refine(img, ((cx / f, cy / f), (w / f, h / f), a), dpi, lid))  # exact edges
+    return rects
+
+
+def cut(img, line, dpi):
+    """The two prints of a front, straightened and without lid, the left or top one first."""
+    return [detect.crop(img, r, dpi, inset_mm=0.3) for r in boxes(img, line, dpi)]
+
+
+def cut_back(img, line):
+    """The two halves of a back (no straightening: only its text matters), the other side painted out."""
+    out = []
+    paper = np.median(img.reshape(-1, img.shape[2]), axis=0)
+    for side in _sides(img.shape, line):
+        ys, xs = np.nonzero(side)
+        half = img.copy()
+        half[~side] = paper
+        out.append(half[ys.min():ys.max() + 1, xs.min():xs.max() + 1])
+    return out

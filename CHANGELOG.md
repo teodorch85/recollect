@@ -3,6 +3,16 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.15.0 — 2026-10-30
+- Review photos… (Organize): every photo of a batch as thumbnails, the chosen one large with its
+  back, year, file and back text. Turn it left or right, split it, delete it (to the Recycle Bin)
+  or show it in its folder. Arrow keys move between photos; L, R, S and Del do the rest.
+- Splitting finds prints that touch or lie tilted against each other: the cut may run at a slant
+  through a wedge of lid, and each print is cut out along its own edges and straightened, like on
+  the bed. Green boxes show exactly what will be saved. If the cut is wrong, click in the gap
+  between the prints, or drag along it to draw the cut yourself.
+- Split is now in Review photos (the Split photo… button is gone).
+
 ## 1.14.0 — 2026-10-30
 - Split photo… (Organize): when two prints lay too close and were saved as one photo, give its
   number (or file name) and ReCollect shows where it would cut, with the back if one is stored.
