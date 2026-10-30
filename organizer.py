@@ -221,8 +221,9 @@ def _write_metadata(path, row, year, source):
         tags.append("Duplicate")
         keywords.append("Duplicate")
     description = row.get("back_text") or ""
+    turn = row.get("turn")
     metadata.write(path, description, tags, keywords, date, replaces=row.get("description"),
-                   turn=int(row.get("turn") or 0))
+                   turn=int(turn) if str(turn or "").isdigit() else None)
     return description
 
 
@@ -375,8 +376,9 @@ def _why(e):
     return f"{type(e).__name__}: {e}"
 
 
-def organize(catalog):
+def organize(catalog, only=None):
     """(Re)file every ready photo by the rules above. Cheap: only moves files whose place changed.
+    only: ids to look at (e.g. one photo just turned), instead of the whole library.
     Returns the number of photos moved."""
     root = catalog.root
     rows = catalog.rows("status IN ('ready', 'filed')")
@@ -384,6 +386,8 @@ def organize(catalog):
     moved = changed = 0
     problems.clear()
     for r in rows:
+        if only is not None and r["id"] not in only:
+            continue
         year, source = _decide_year(r, written, stamped)
         # the year already names the parent folder: "1988 Crete" -> 1988/Crete
         batch = folder_name(re.sub(rf"\b{year}\b", "", r.get("batch") or "") if year else r.get("batch"))
@@ -439,7 +443,7 @@ def organize(catalog):
                        description=r.get("description"))
         moved += cur_front != front
         changed += 1
-    if changed:
+    if changed and only is None:
         catalog.export_csv()
         for d, _, _ in sorted(os.walk(root), key=lambda w: -len(w[0])):  # tidy empty folders, deepest first
             d = Path(d)
