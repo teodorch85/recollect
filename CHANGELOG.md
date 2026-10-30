@@ -3,6 +3,13 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.15.4 — 2026-10-30
+- Photo numbers on the bed preview sit on a dark tag in the middle of each print, readable on
+  white backs and busy pictures alike; red tags mark duplicates and problems. The arrow showing a
+  photo's top no longer runs through its number.
+- "Remove duplicates from this bed" shows only when the bed has duplicates.
+- The Organize box is just called Organize (folders follow your naming template).
+
 ## 1.15.3 — 2026-10-30
 - Updates no longer leave old program files behind in the _internal folder: it now holds exactly the
   files of the version installed. (This starts with the update after this one; to tidy it now,

@@ -352,6 +352,24 @@ def hit(rects, x, y):
     return None
 
 
+def _tag(view, text, centre, alert=False):
+    """A label centred on a print: light text on a dark, see-through tag, readable on any picture."""
+    font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2
+    (tw, th), base = cv2.getTextSize(text, font, scale, thick)
+    pad = 10
+    x0, y0 = centre[0] - tw // 2 - pad, centre[1] - th // 2 - pad
+    x1, y1 = centre[0] + tw // 2 + pad, centre[1] + th // 2 + base + pad // 2
+    x0, y0 = max(x0, 0), max(y0, 0)
+    x1, y1 = min(x1, view.shape[1]), min(y1, view.shape[0])
+    if x1 <= x0 or y1 <= y0:
+        return
+    area = view[y0:y1, x0:x1]
+    colour = np.array((30, 30, 170) if alert else (40, 40, 40), np.float32)
+    view[y0:y1, x0:x1] = (area * 0.25 + colour * 0.75).astype(np.uint8)
+    cv2.putText(view, text, (centre[0] - tw // 2, centre[1] + th // 2), font, scale, (255, 255, 255), thick,
+                cv2.LINE_AA)
+
+
 def draw_overlay(img, rects, labels=None, max_side=1400, alert=(), ups=None):
     """Small preview of the bed with numbered outlines, for the app window (alert: indices in red;
     ups: per rect, the direction of the photo's top, drawn as an arrow)."""
@@ -361,15 +379,14 @@ def draw_overlay(img, rects, labels=None, max_side=1400, alert=(), ups=None):
         (cx, cy), (w, h), a = r
         box = cv2.boxPoints(((cx * f, cy * f), (w * f, h * f), a)).astype(np.int32)
         cv2.polylines(view, [box], True, (40, 40, 230) if i in alert else (0, 160, 255), 3)
-        text = labels[i] if labels else str(i + 1)
-        org = (int(cx * f) - 20, int(cy * f) + 12)
-        cv2.putText(view, text, org, cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 0), 6, cv2.LINE_AA)
-        cv2.putText(view, text, org, cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 200, 255), 2, cv2.LINE_AA)
-        if ups:
+        label_at = (cx * f, cy * f)
+        if ups:  # an arrow from the centre towards the photo's top
             ux, uy = ups[i]
             n = 0.32 * min(w, h) * f
-            start = (int(cx * f - ux * n * 0.2), int(cy * f - uy * n * 0.2) - 30)
-            end = (int(cx * f + ux * n), int(cy * f + uy * n) - 30)
+            start = (int(cx * f + ux * 12), int(cy * f + uy * 12))
+            end = (int(cx * f + ux * n), int(cy * f + uy * n))
             cv2.arrowedLine(view, start, end, (0, 0, 0), 9, cv2.LINE_AA, tipLength=0.35)
             cv2.arrowedLine(view, start, end, (90, 230, 90), 4, cv2.LINE_AA, tipLength=0.35)
+            label_at = (cx * f, cy * f + (-36 if uy > 0.5 else 36))  # below the arrow, or above one pointing down
+        _tag(view, labels[i] if labels else str(i + 1), (int(label_at[0]), int(label_at[1])), i in alert)
     return view
