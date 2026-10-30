@@ -13,6 +13,7 @@ from PIL import Image, ImageTk
 import organizer
 import rotate
 import split
+import theme
 
 ALL = "All photos"
 COLUMNS = 4
@@ -53,7 +54,7 @@ class Review:
         x, y = app.root.winfo_rootx(), app.root.winfo_rooty()
         self.win.geometry(f"{int(1250 * self.ui)}x{int(820 * self.ui)}+{x + 20}+{y + 20}")
         self.thumb = int(130 * self.ui)
-        self.blank = ImageTk.PhotoImage(Image.new("RGB", (self.thumb, self.thumb), "#dddddd"))
+        self.blank = ImageTk.PhotoImage(Image.new("RGB", (self.thumb, self.thumb), "#E9E9E9"))
 
         top = ttk.Frame(self.win, padding=8)
         top.pack(fill="x")
@@ -71,26 +72,26 @@ class Review:
         body.pack(fill="both", expand=True)
         left = ttk.Frame(body)
         left.pack(side="left", fill="y")
-        self.grid = tk.Canvas(left, width=COLUMNS * (self.thumb + 12) + 4, highlightthickness=0, background="#f3f3f3")
+        self.grid = tk.Canvas(left, width=COLUMNS * (self.thumb + 12) + 4, highlightthickness=0, background=theme.PAGE)
         bar = ttk.Scrollbar(left, orient="vertical", command=self.grid.yview)
         self.grid.configure(yscrollcommand=bar.set)
         self.grid.pack(side="left", fill="y")
         bar.pack(side="left", fill="y")
-        self.inner = tk.Frame(self.grid, background="#f3f3f3")
+        self.inner = tk.Frame(self.grid, background=theme.PAGE)
         self.grid.create_window(0, 0, window=self.inner, anchor="nw")
         self.inner.bind("<Configure>", lambda e: self.grid.configure(scrollregion=self.grid.bbox("all")))
         self.win.bind("<MouseWheel>", self._wheel)
 
         right = ttk.Frame(body, padding=(12, 0, 0, 0))
         right.pack(side="left", fill="both", expand=True)
-        self.big = tk.Label(right, background="#333")
+        self.big = tk.Label(right, background=theme.PREVIEW)
         self.big.pack(fill="both", expand=True)
         below = ttk.Frame(right)
         below.pack(fill="x", pady=(8, 0))
-        frame = tk.Frame(below, background="#333", width=int(220 * self.ui), height=int(150 * self.ui))
+        frame = tk.Frame(below, background=theme.PREVIEW, width=int(220 * self.ui), height=int(150 * self.ui))
         frame.pack(side="left")
         frame.pack_propagate(False)  # a fixed size, with or without a back to show
-        self.back = tk.Label(frame, background="#333", foreground="#aaa")
+        self.back = tk.Label(frame, background=theme.PREVIEW, foreground="#aaa")
         self.back.pack(fill="both", expand=True)
         self.info = tk.StringVar()
         ttk.Label(below, textvariable=self.info, justify="left", wraplength=int(520 * self.ui),
@@ -98,10 +99,10 @@ class Review:
         actions = ttk.Frame(right)
         actions.pack(fill="x", pady=(8, 0))
         self.buttons = [
-            ttk.Button(actions, text="⟲ Turn left  [L]", command=lambda: self.turn(-90)),
-            ttk.Button(actions, text="Turn right ⟳  [R]", command=lambda: self.turn(90)),
-            ttk.Button(actions, text="Split into two…  [S]", command=self.split),
-            ttk.Button(actions, text="Delete…  [Del]", command=self.delete),
+            ttk.Button(actions, text="⟲ Turn left", command=lambda: self.turn(-90)),
+            ttk.Button(actions, text="Turn right ⟳", command=lambda: self.turn(90)),
+            ttk.Button(actions, text="Split into two…", command=self.split),
+            ttk.Button(actions, text="Delete…", command=self.delete),
             ttk.Button(actions, text="Show in folder", command=self.show_in_folder),
         ]
         for b in self.buttons:
@@ -109,7 +110,7 @@ class Review:
         status = ttk.Frame(right)
         status.pack(fill="x", pady=(6, 0))
         self.spinner = ttk.Progressbar(status, mode="indeterminate", length=int(120 * self.ui))
-        self.note = tk.StringVar(value="←/→ previous and next photo.")
+        self.note = tk.StringVar(value="Keys: ←/→ previous and next photo · L/R turn · S split · Del delete")
         ttk.Label(status, textvariable=self.note, foreground="#555", wraplength=int(620 * self.ui),
                   justify="left").pack(side="left", anchor="w")
 
@@ -135,11 +136,11 @@ class Review:
             child.destroy()
         self.cells = []
         for n, r in enumerate(self.rows):
-            cell = tk.Frame(self.inner, background="#f3f3f3", padx=3, pady=3)
+            cell = tk.Frame(self.inner, background=theme.PAGE, padx=3, pady=3)
             cell.grid(row=n // COLUMNS, column=n % COLUMNS, padx=1, pady=1)
-            pic = tk.Label(cell, image=self.blank, background="#f3f3f3")
+            pic = tk.Label(cell, image=self.blank, background=theme.PAGE)
             pic.pack()
-            cap = tk.Label(cell, text=r["id"], background="#f3f3f3")
+            cap = tk.Label(cell, text=r["id"], background=theme.PAGE)
             cap.pack()
             for w in (cell, pic, cap):
                 w.bind("<Button-1>", lambda e, k=n: self.select(k))
@@ -180,7 +181,7 @@ class Review:
 
     def _set_thumb(self, n, img):
         c = self.cells[n]
-        square = Image.new("RGB", (self.thumb, self.thumb), "#f3f3f3")  # same size cells, whatever the shape
+        square = Image.new("RGB", (self.thumb, self.thumb), theme.PAGE)  # same size cells, whatever the shape
         square.paste(img, ((self.thumb - img.width) // 2, (self.thumb - img.height) // 2))
         c["img"] = ImageTk.PhotoImage(square)
         c["pic"].config(image=c["img"])
@@ -197,7 +198,7 @@ class Review:
             if k is not None and k < len(self.cells):
                 on = k == i
                 for part in ("cell", "cap"):
-                    self.cells[k][part].config(background="#2f7de1" if on else "#f3f3f3")
+                    self.cells[k][part].config(background=theme.ACCENT if on else theme.PAGE)
                 self.cells[k]["cap"].config(foreground="white" if on else "black")
         self.i = i
         row = self.rows[i] = self._fresh(self.rows[i])
