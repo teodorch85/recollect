@@ -3,6 +3,20 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.13.1 — 2026-10-30
+Fixes from a review of 1.13.0:
+- Left-click now turns a photo clockwise, as described (it turned it the other way).
+- A rotation made in another app (Windows Photos, digiKam) is no longer reset when ReCollect
+  rewrites a photo's info; ReCollect only sets the orientation of photos you turned in it.
+- Clicking a photo rewrites just that photo, not the whole library, so the window stays quick.
+- After changing the photos folder, the old preview no longer turns photos (it could turn a
+  different photo with the same number in the new folder).
+- The preview always shows the turn stored for each photo, also after Turn upright…
+- Turn upright… looks at the photo as stored, so a turn set by hand isn't applied twice.
+- TIFF photos can't take an orientation tag here: clicking one now says so instead of
+  claiming it was turned. A problem writing the tag (e.g. photo open in a viewer) is shown.
+- The preview keeps a small copy of the bed instead of the full scan, so memory is freed.
+
 ## 1.13.0 — 2026-10-29
 - Turn photos in the preview: after a front scan, a green arrow in each outline shows where that
   photo's top is. Click a photo to turn it a quarter turn clockwise, right-click for the other

@@ -56,6 +56,7 @@ SCANNER_JOBS = ("_do_fronts", "_do_backs", "_do_preview", "_do_calibrate")
 UPDATE_CHECK_MS = 60_000  # how often to look for a newer version in this folder (from source)
 ONLINE_CHECK_S = 6 * 3600  # how often ReCollect.exe asks GitHub for a new release
 MONTHS = ["—", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+PREVIEW_SIDE = 1400  # longest side of the bed picture in the preview (as detect.draw_overlay)
 PREVIEW_DPI = 150  # quick look at the bed: about 10 s, enough to find the prints
 
 
@@ -317,8 +318,8 @@ class App:
         self.view_area.pack_propagate(False)
         self.canvas = tk.Label(self.view_area, background="#333")
         self.canvas.place(relx=0.5, rely=0.5, anchor="center")
-        self.canvas.bind("<Button-1>", lambda e: self._click_view(e, -90))  # arrow turns clockwise
-        self.canvas.bind("<Button-3>", lambda e: self._click_view(e, 90))
+        self.canvas.bind("<Button-1>", lambda e: self._click_view(e, 90))  # the photo turns clockwise
+        self.canvas.bind("<Button-3>", lambda e: self._click_view(e, -90))
         self._clickable = None  # the fronts on show, which a click turns
         self._view = None
         self._render_job = None
@@ -395,17 +396,38 @@ class App:
         self._render()
 
     # ---------- turning photos in the preview (EXIF orientation only) ----------
-    def _set_clickable(self, img, rects, labels, alert, pids, auto):
-        self._clickable = {"img": img, "rects": rects, "labels": labels, "alert": alert, "pids": pids,
-                           "auto": auto, "turn": [0] * len(pids)}
+    def _set_clickable(self, img, rects, labels, alert, pids):
+        """Make the fronts on show clickable. Keeps a preview-sized copy of the bed, not the full scan."""
+        f = PREVIEW_SIDE / max(img.shape[:2])
+        small = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+        rects = [((cx * f, cy * f), (w * f, h * f), a) for (cx, cy), (w, h), a in rects]
+        self._clickable = {"img": small, "rects": rects, "labels": labels, "alert": alert, "pids": pids,
+                           "root": self._catalog().root}
         self._draw_clickable()
 
-    def _draw_clickable(self):
+    def _clickable_rows(self):
+        """Catalogue rows of the photos on show (None where deleted), or None if the library changed."""
         c = self._clickable
-        ups = [detect.top_direction(r, a + t) for r, a, t in zip(c["rects"], c["auto"], c["turn"])]
-        labels = [lab + (f" +{t}" if t else "") for lab, t in zip(c["labels"], c["turn"])]
+        if self._catalog().root != c["root"]:  # another photos folder: these ids mean other photos there
+            return None
+        rows = {r["id"]: r for r in self._catalog().rows(f"id IN ({','.join('?' * len(c['pids']))})", c["pids"])}
+        return [rows.get(pid) for pid in c["pids"]]
+
+    def _draw_clickable(self):
+        """Redraw the fronts with an arrow to each photo's top, from what the catalogue says now."""
+        c = self._clickable
+        rows = self._clickable_rows()
+        if rows is None:
+            self._clickable = None
+            return
+        ups, labels = [], []
+        for r, rect, label in zip(rows, c["rects"], c["labels"]):
+            turn = int((r or {}).get("turn") or 0)
+            ups.append(detect.top_direction(rect, int((r or {}).get("rotated") or 0) + turn))
+            labels.append(label + (f" +{turn}" if turn else ""))
         self._view = Image.fromarray(cv2.cvtColor(detect.draw_overlay(c["img"], c["rects"], labels, alert=c["alert"],
-                                                                      ups=ups), cv2.COLOR_BGR2RGB))
+                                                                      ups=ups, max_side=PREVIEW_SIDE),
+                                                  cv2.COLOR_BGR2RGB))
         self._render()
 
     def _click_view(self, event, delta):
@@ -416,22 +438,27 @@ class App:
         shown_w, shown_h = self._photo.width(), self._photo.height()
         x = event.x - (self.canvas.winfo_width() - shown_w) / 2
         y = event.y - (self.canvas.winfo_height() - shown_h) / 2
-        to_bed = c["img"].shape[1] / shown_w  # preview pixel -> scan pixel (same aspect ratio)
-        i = detect.hit(c["rects"], x * to_bed, y * to_bed)
-        if i is None:
+        to_small = c["img"].shape[1] / shown_w  # preview pixel -> stored preview pixel (same aspect ratio)
+        i = detect.hit(c["rects"], x * to_small, y * to_small)
+        rows = self._clickable_rows()
+        if i is None or rows is None or rows[i] is None:  # outside, another library, or deleted (Redo fronts)
+            if rows is None:
+                self._clickable = None
             return
-        pid, cat = c["pids"][i], self._catalog()
-        row = cat.rows("id = ?", (pid,))
-        if not row:  # deleted meanwhile (Redo fronts, Remove duplicates)
+        row, pid, cat = rows[i], c["pids"][i], self._catalog()
+        if Path(row.get("path") or "").suffix.lower() not in (".jpg", ".jpeg"):
+            self.status.set(f"{pid} is a TIFF: turning in the preview works for JPEG photos only. "
+                            "Turn it in your photo app instead.")
             return
-        c["turn"][i] = (c["turn"][i] + delta) % 360
-        cat.upsert(pid, turn=c["turn"][i], meta="")  # meta="": organize() writes the orientation into the file
-        if row[0]["status"] in ("ready", "filed"):
-            organizer.organize(cat)  # photos still waiting for backs get it when they are filed
+        turn = (int(row.get("turn") or 0) + delta) % 360
+        cat.upsert(pid, turn=turn, meta="")  # meta="": organize() writes the orientation into the file
+        if row["status"] in ("ready", "filed"):
+            organizer.organize(cat, only={pid})  # waiting for backs: written when it is filed
         self._draw_clickable()
         then = " Then flip the prints and press Space." if self.state == "back" else ""
-        self.status.set(f"{pid} turned {c['turn'][i]}° (the arrow shows its top). Click again to keep turning, "
-                        f"right-click to turn the other way. Only the orientation tag changes.{then}")
+        self.status.set(" ".join(t for t in (
+            f"{pid} turned {turn}° clockwise (the arrow shows its top). Click again to keep turning, right-click "
+            f"to turn back. Only the orientation tag changes.{then}", organizer.problem_text()) if t))
 
     def _render(self):
         """Fit the last bed preview inside the preview area (called again on window resize)."""
@@ -547,7 +574,7 @@ class App:
             chunk = rows[start:start + 8]
             self._progress(start / max(1, len(rows)))
             self.events.put(("note", f"Checking which way is up… {start}/{len(rows)}"))
-            photos = [duplicates.read_image(cat.root / r["path"]) for r in chunk]
+            photos = [duplicates.read_image(cat.root / r["path"], raw=True) for r in chunk]  # as stored, no EXIF turn
             have = [(r, img) for r, img in zip(chunk, photos) if img is not None]
             answers, problem = rotate.orient_all(key, [img for _, img in have])
             for (r, img), answer in zip(have, answers):
@@ -560,14 +587,18 @@ class App:
                     save_image(path, rotate.turn(img, degrees), int(r.get("dpi") or 600), fmt, self.s["jpeg_quality"])
                     turned += 1
                 total = (int(r.get("rotated") or 0) + degrees) % 360
-                fields = {"turn": 0} if degrees else {}  # the pixels are now upright: drop a turn set by hand
+                fields = {"turn": 0} if degrees else {}  # the pixels are now upright: orientation back to normal
                 cat.upsert(r["id"], rotated=total, orientation=f"{answer['confidence']}: {answer['reason']}",
                            meta="", **fields)  # meta="": organize() writes the photo's info into the new file again
         organizer.organize(cat)
         message = f"“{self._turn_batch}”: {turned} of {len(rows)} photo(s) turned upright."
         if problem:
             message += f" Some couldn't be checked: {problem}"
-        return None, " ".join(t for t in (message, organizer.problem_text()) if t)
+        return None, " ".join(t for t in (message, organizer.problem_text()) if t), self._refresh_clickable
+
+    def _refresh_clickable(self):
+        if self._clickable:
+            self._draw_clickable()
 
     def _renamed(self, old, new):
         cat = self._catalog()
@@ -957,6 +988,7 @@ class App:
             self._progress(0.6 + 0.15 * i / len(rects))
             photos.append(enhance.process_front(detect.crop(img, r, dpi), dpi, self.s["sharpen"], self.s["restore_color"]))
         turns, turn_problem = self._orient(photos)
+        n_turned = 0
         self._stop_point()
         for i, (r, photo, answer) in enumerate(zip(rects, photos, turns)):
             if self.cancelling.is_set():
@@ -965,6 +997,7 @@ class App:
             self._progress(0.8 + 0.2 * i / len(rects))
             pid = f"{first + i:05d}"
             turned = answer["turn_clockwise"] if answer and answer["confidence"] != "low" else 0
+            n_turned += bool(turned)
             photo = rotate.turn(photo, turned)
             path = out / f"{pid}{ext}"
             save_image(path, photo, dpi, self.s["format"], self.s["jpeg_quality"])
@@ -988,12 +1021,10 @@ class App:
         labels = [p["id"] + (f" = {p['dup']}" if p["dup"] else "") for p in self.bed]
         dups = [i for i, p in enumerate(self.bed) if p["dup"]]
         view = detect.draw_overlay(img, rects, labels, alert=dups)
-        auto = [a["turn_clockwise"] if a and a["confidence"] != "low" else 0 for a in turns]
         pids = [p["id"] for p in self.bed]
-        clickable = (lambda: self._set_clickable(img, rects, labels, dups, pids, auto))
+        clickable = (lambda: self._set_clickable(img, rects, labels, dups, pids))
         tip = "Click a photo to turn it (the arrow shows its top). "
         took = f"{time.time() - t:.0f}s" + (f", {stamps} with a camera date" if stamps else "")
-        n_turned = sum(1 for a in turns if a and a["confidence"] != "low" and a["turn_clockwise"])
         if n_turned:
             took += f", {n_turned} turned upright"
         if turn_problem:

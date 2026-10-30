@@ -21,11 +21,12 @@ OLD_TAGS = ("Exif.Image.XPKeywords", "Exif.Image.XPComment", "Exif.Image.XPTitle
 ORIENTATION = {0: 1, 90: 6, 180: 3, 270: 8}  # degrees to turn clockwise for display -> EXIF Orientation
 
 
-def write(path, description, tags, keywords, date=None, replaces=None, turn=0):
+def write(path, description, tags, keywords, date=None, replaces=None, turn=None):
     """date: 'YYYY', 'YYYY-MM' or 'YYYY-MM-DD' (missing parts become 1 January), or None for undated.
     replaces: the description we wrote last time. An empty description removes the one in the file
     only if it is still that one; a description typed in another app is left alone.
-    turn: how far viewers should turn the photo clockwise (EXIF Orientation; the pixels stay as they are)."""
+    turn: how far viewers should turn the photo clockwise (EXIF Orientation; the pixels stay as they are).
+    None leaves the orientation alone, e.g. as another app set it."""
     if path.suffix.lower() not in (".jpg", ".jpeg"):
         return  # TIFFs keep their info in the database only
     tags, leaves = ([*dict.fromkeys(t.strip() for t in ts if t and t.strip())] for ts in (tags, keywords))
@@ -40,15 +41,16 @@ def write(path, description, tags, keywords, date=None, replaces=None, turn=0):
             y, m, d = (date.split("-") + ["01", "01"])[:3]
             stamp = f"{y}:{int(m):02d}:{int(d):02d} 12:00:00"
         exif.update({k: stamp if date else None for k in EXIF_DATE})
-        exif["Exif.Image.Orientation"] = str(ORIENTATION.get(int(turn or 0) % 360, 1))
+        orientation = {} if turn is None else {"Xmp.tiff.Orientation": str(ORIENTATION.get(int(turn) % 360, 1))}
+        if turn is not None:
+            exif["Exif.Image.Orientation"] = orientation["Xmp.tiff.Orientation"]
         img.modify_exif(exif)
         img.modify_iptc({"Iptc.Envelope.CharacterSet": "\x1b%G",  # = UTF-8, so Greek keywords survive
                          "Iptc.Application2.Keywords": leaves or None})
         xmp = {"Xmp.dc.description": {'lang="x-default"': description} if description else None} if ours else {}
         img.modify_xmp({**xmp, "Xmp.dc.subject": leaves or None,
                         "Xmp.digiKam.TagsList": tags or None,
-                        "Xmp.photoshop.DateCreated": date or None,
-                        "Xmp.tiff.Orientation": str(ORIENTATION.get(int(turn or 0) % 360, 1))})
+                        "Xmp.photoshop.DateCreated": date or None, **orientation})
         data = img.get_bytes()
     tmp = path.with_name(path.name + ".tmp")
     try:

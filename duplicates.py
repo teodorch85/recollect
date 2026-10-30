@@ -60,10 +60,12 @@ def fingerprints(bgr):
     return " ".join(fingerprint(t) for t in _turns(bgr))
 
 
-def read_image(path):
-    """cv2.imread that also opens Greek file names."""
+def read_image(path, raw=False):
+    """cv2.imread that also opens Greek file names. raw: the pixels as stored, ignoring the EXIF
+    orientation (which OpenCV otherwise applies)."""
+    flags = cv2.IMREAD_COLOR | (cv2.IMREAD_IGNORE_ORIENTATION if raw else 0)
     try:
-        return cv2.imdecode(np.fromfile(str(path), np.uint8), cv2.IMREAD_COLOR)
+        return cv2.imdecode(np.fromfile(str(path), np.uint8), flags)
     except OSError:
         return None
 
