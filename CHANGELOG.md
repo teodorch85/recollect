@@ -3,6 +3,13 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.14.0 — 2026-10-30
+- Split photo… (Organize): when two prints lay too close and were saved as one photo, give its
+  number (or file name) and ReCollect shows where it would cut, with the back if one is stored.
+  Click to move the cut, or cut the other way. Front and back are cut along the same line, each
+  back is read again, and the second print gets the next free number. The old files go to the
+  Recycle Bin.
+
 ## 1.13.1 — 2026-10-30
 Fixes from a review of 1.13.0:
 - Left-click now turns a photo clockwise, as described (it turned it the other way).

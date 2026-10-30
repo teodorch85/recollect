@@ -452,18 +452,22 @@ def organize(catalog, only=None):
     return moved
 
 
+def recycle(path):
+    """Send a file to the Recycle Bin (so it can be restored)."""
+    from win32com.shell import shell, shellcon
+    shell.SHFileOperation((0, shellcon.FO_DELETE, str(path), None, shellcon.FOF_ALLOWUNDO |
+                           shellcon.FOF_NOCONFIRMATION | shellcon.FOF_SILENT | shellcon.FOF_NOERRORUI, None, None))
+
+
 def remove_photo(catalog, pid):
     """Send a photo and its back scan to the Recycle Bin (so it can be restored) and forget it."""
-    from win32com.shell import shell, shellcon
     row = catalog.rows("id = ?", (pid,))
     if not row:
         return
     for rel in (row[0].get("path"), row[0].get("back_path")):
         f = catalog.root / rel if rel else None
         if f and f.exists():
-            shell.SHFileOperation((0, shellcon.FO_DELETE, str(f), None, shellcon.FOF_ALLOWUNDO |
-                                   shellcon.FOF_NOCONFIRMATION | shellcon.FOF_SILENT | shellcon.FOF_NOERRORUI,
-                                   None, None))
+            recycle(f)
             _remove_empty(f.parent, catalog.root)
     catalog.delete(pid)
     with catalog.lock:  # photos that pointed at it as their original no longer have one

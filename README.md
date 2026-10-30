@@ -6,6 +6,7 @@ Scan, sort and keep your printed photos with an Epson Perfection V600 on Windows
 - Reads handwriting and lab stamps on the backs and the date a camera printed on the front.
 - Files the photos into Year / Batch folders with metadata that Immich and other photo apps read.
 - Finds duplicates, even reprints and differently cropped scans.
+- Splits a scan that caught two prints as one, front and back.
 
 ## Install
 
