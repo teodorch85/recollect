@@ -36,7 +36,7 @@ def test_year_and_month_set_by_hand(cat):
     organizer.set_batch_year(cat, "Γάμος Βασίλη", "2007", 1)
     assert files(cat) == ["2007/Γάμος Βασίλη/2007-01_γάμος-βασίλη_00001.jpg"]
     assert organizer.batch_date(cat, "Γάμος Βασίλη") == ("2007", "01")
-    meta = pyexiv2.Image(str(cat.root / cat.rows()[0]["path"]))
+    meta = pyexiv2.ImageData((cat.root / cat.rows()[0]["path"]).read_bytes())  # Greek folder: as metadata.py
     assert meta.read_exif()["Exif.Photo.DateTimeOriginal"].startswith("2007:01:")
     meta.close()
     organizer.set_batch_year(cat, "Γάμος Βασίλη", "")  # back to automatic
