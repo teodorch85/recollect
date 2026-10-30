@@ -1,4 +1,6 @@
 """Library actions, run on a temporary library: splitting, turning, turning upright, duplicates."""
+from pathlib import Path
+
 import numpy as np
 import pyexiv2
 import cv2
@@ -139,5 +141,5 @@ def test_next_id_counts_files_waiting_in_the_inbox(cat):
 
 def test_file_photos(cat):
     add(cat, "00001", fakes.picture(50, 50), status="scanning")
-    assert library.file_photos(cat, ["00001"]) == "Filed into Unknown year/Γάμος"
+    assert library.file_photos(cat, ["00001"]) == f"Filed into {Path('Unknown year/Γάμος')}"
     assert cat.rows()[0]["status"] == "filed"

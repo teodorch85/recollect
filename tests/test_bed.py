@@ -1,4 +1,6 @@
 """A whole bed, scanned at 150 dpi: fronts cut out and saved, backs matched and read, Cancel, preview."""
+from pathlib import Path
+
 import cv2
 import numpy as np
 import pytest
@@ -59,7 +61,7 @@ def test_fronts_then_backs(cat, glass):
 
     view, message = bed.save_backs(cat, backs(text_on=(0,)), DPI, done.bed, empty, SETTINGS,
                                    read_text=lambda img: "Κρήτη 1994")
-    assert message.startswith("Backs: 1 kept, 2 blank. Filed into 1994/Crete")
+    assert message.startswith(f"Backs: 1 kept, 2 blank. Filed into {Path('1994/Crete')}")  # \\ on Windows
     status = {r["id"]: (r["status"], r["back_status"], r["back_text"]) for r in cat.rows()}
     assert status == {"00001": ("filed", "saved", "Κρήτη 1994"), "00002": ("filed", "blank", None),
                       "00003": ("filed", "blank", None)}
@@ -70,7 +72,7 @@ def test_fronts_then_backs(cat, glass):
 def test_without_backs_photos_are_filed_at_once(cat, glass):
     img, empty = glass
     done = bed.save_fronts(cat, img, DPI, empty, SETTINGS, "Crete", scan_backs=False)
-    assert done.bed == [] and "Filed into Unknown year/Crete" in done.message
+    assert done.bed == [] and f"Filed into {Path('Unknown year/Crete')}" in done.message
     assert {r["back_status"] for r in cat.rows()} == {"not scanned"}
 
 
