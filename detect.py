@@ -44,10 +44,8 @@ class Sensitivity:
 NORMAL = Sensitivity(lid_min=190, tophat=20, hough=0.8, line_in=1.5, line_gap=0.05, angle=8,
                      min_side=1.5, straight=1.5, step=1.5, ratio=3.0)
 FINER = Sensitivity(lid_min=150, tophat=12, hough=0.5, line_in=1.0, line_gap=0.1, angle=10,
-                    min_side=1.2, straight=1.5, step=1.1, ratio=2.0)
-# The second opinion on a normal run: FINER's gap lines, but not its step test, which a single print's
-# outline (it jogs by up to ~1.2 work pixels) passes now and then; that would ask about ordinary beds.
-CROSS_CHECK = replace(FINER, step=NORMAL.step, ratio=NORMAL.ratio)
+                    min_side=1.2, straight=1.5, step=1.1, ratio=2.0)  # step: on big blobs only (_stacked)
+
 
 
 def find_photos(img, dpi, reference=None, refine=True, finer=False):
@@ -70,7 +68,7 @@ def find_prints(img, dpi, reference=None, finer=False):
     rects, doubts = _detect(img, dpi, reference, True, FINER if finer else NORMAL)
     unsure = {i for i, d in enumerate(doubts) if (d and not finer) or odd_size(rects[i], dpi)}  # finer hints everywhere
     if not finer and rects:
-        again = _detect(img, dpi, reference, False, CROSS_CHECK)[0]
+        again = _detect(img, dpi, reference, False, FINER)[0]
         unsure |= {i for i, r in enumerate(rects) if not any(_same_print(r, o, dpi) for o in again)}
     return rects, sorted(unsure)
 
@@ -269,6 +267,9 @@ def _stacked(c, gray, sens=NORMAL):
     piece = MIN_PIECE_IN * WORK_DPI
     if max(w, h) < 2 * piece or min(w, h) < piece:
         return [c], False
+    small = w * h * (2.54 / WORK_DPI) ** 2 < ODD_AREA_CM2  # no room for two prints of a usual size
+    if small:  # the outline of one print jogs by up to ~1.2 px: on a small blob a finer step test sees noise
+        sens = replace(sens, step=max(sens.step, NORMAL.step), ratio=max(sens.ratio, NORMAL.ratio))
     # Straighten the blob so its long side runs down the rows
     pad = 10
     W, H = int(w) + 2 * pad, int(h) + 2 * pad
@@ -314,7 +315,7 @@ def _stacked(c, gray, sens=NORMAL):
         stepped |= rms_1 >= sens.step and rms_1 >= sens.ratio * wobble
         hinted |= rms_1 >= sens.step and rms_1 >= 0.5 * sens.ratio * wobble  # a single print's outline jogs up to ~1.2
     if not stepped:
-        return [c], hinted
+        return [c], hinted and not small
     # Where exactly they meet: the strongest straight edge across the picture near there
     seam = rows[k]
     gy = np.abs(cv2.Sobel(pic.astype(np.float32), cv2.CV_32F, 0, 1, ksize=3))
