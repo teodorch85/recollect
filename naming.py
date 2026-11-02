@@ -5,7 +5,9 @@ template (https://docs.immich.app/administration/storage-template/):
 
 Variables: date taken y yy M MM MMM MMMM d dd (empty when not known: a print may have only a year),
 album (= the batch name, without the year), id (the photo number), filename (ReCollect's own name:
-date_batch_id), date (1994-07, 1994 or 'undated'), slug (the batch name in file-name form), paper, size.
+date_batch_id), date (1994-07, 1994 or 'undated'), slug (the batch name in file-name form), paper, size,
+seq (the order the photo was taken in within its batch, 001…, from the roll and frame numbers the lab
+printed on the backs; else the order they were scanned), roll and frame (as printed on the back).
 {{#if var}} … {{else}} … {{/if}} as in Immich; {{{var}}} is the same as {{var}}.
 '/' separates folders. The extension is added, and so is the photo number when the name lacks it
 (it keeps names unique and lets ReCollect find a file again).
@@ -24,9 +26,10 @@ PRESETS = [
     "{{#if y}}{{y}}{{else}}Unknown year{{/if}}/{{#if MMMM}}{{MMMM}}{{else}}Unknown month{{/if}}/{{filename}}",
     "{{album}}/{{filename}}",
     "{{album}}/{{date}}_{{id}}",
+    "{{#if y}}{{y}}{{else}}Unknown year{{/if}}/{{album}}/{{seq}}_{{filename}}",
 ]
 VARIABLES = ("y", "yy", "M", "MM", "MMM", "MMMM", "d", "dd", "album", "id", "filename", "date", "slug", "paper",
-             "size")
+             "size", "seq", "roll", "frame")
 TOKEN = re.compile(r"\{\{\{?\s*([^{}]*?)\s*\}?\}\}")
 BAD = re.compile(r'[<>:"\\|?*\x00-\x1f]')  # not allowed in Windows names ('/' separates folders)
 
@@ -91,8 +94,8 @@ def _render(parts, values):
     return "".join(out)
 
 
-def values_for(year, month, day, album, pid, slug, paper="", size=""):
-    """The variables for one photo; month/day may be None."""
+def values_for(year, month, day, album, pid, slug, paper="", size="", seq=None, roll="", frame=None):
+    """The variables for one photo; month/day/seq/frame may be None."""
     y = str(year) if year else ""
     m = int(month) if month else None
     d = int(day) if day else None
@@ -101,7 +104,8 @@ def values_for(year, month, day, album, pid, slug, paper="", size=""):
             "MMM": calendar.month_abbr[m] if m else "", "MMMM": calendar.month_name[m] if m else "",
             "d": str(d) if d else "", "dd": f"{d:02d}" if d else "", "album": album, "id": pid,
             "slug": slug, "date": date, "filename": "_".join(p for p in (date, slug, pid) if p),
-            "paper": paper or "", "size": size or ""}
+            "paper": paper or "", "size": size or "", "seq": f"{seq:03d}" if seq else "",
+            "roll": roll or "", "frame": f"{frame:02d}" if frame else ""}
 
 
 def render(parts, values):
@@ -128,6 +132,6 @@ def example(template):
         parts = parse(template)
     except TemplateError as e:
         return None, str(e)
-    folders, name = render(parts, values_for(1994, 7, None, "Crete", "00012", "crete", "Kodak", "10x15"))
-    undated, uname = render(parts, values_for(None, None, None, "Crete", "00013", "crete"))
+    folders, name = render(parts, values_for(1994, 7, None, "Crete", "00012", "crete", "Kodak", "10x15", 7, "45", 12))
+    undated, uname = render(parts, values_for(None, None, None, "Crete", "00013", "crete", seq=8))
     return "/".join(folders + [name + ".jpg"]) + "   ·   without a year: " + "/".join(undated + [uname + ".jpg"]), None

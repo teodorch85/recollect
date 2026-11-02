@@ -33,6 +33,7 @@ from pathlib import Path
 
 import metadata
 import naming
+import sequence
 
 INBOX, BACKS, UNKNOWN = "_inbox", "_backs", "Unknown year"
 
@@ -40,13 +41,15 @@ INBOX, BACKS, UNKNOWN = "_inbox", "_backs", "Unknown year"
 FIELDS = ["id", "status", "batch", "scanned", "bed", "dpi", "size_cm", "print_format", "back_status",
           "back_text", "back_lab", "paper", "date_stamp", "year_manual", "year", "year_source", "path",
           "back_path", "organized", "meta", "description", "fingerprint", "duplicate_of", "distinct_from",
-          "rotated", "orientation", "turn"]
+          "rotated", "orientation", "turn", "roll", "frame", "seq"]
 # description = what organize() last wrote as the photo's description (so it knows what it may clear)
 # fingerprint = duplicates.fingerprints() of the front; duplicate_of = id of the photo it repeats;
 # distinct_from = ids you marked "not a duplicate" of this one (space separated)
 # rotated = degrees the front was turned clockwise by auto-rotate; orientation = Claude's confidence: reason
 # turn = degrees you turned it clockwise in the preview: only the EXIF Orientation tag, the pixels stay
-META = "5"  # bump when the metadata written into photos changes, so organize() rewrites it everywhere
+# roll, frame = the lab's order and frame numbers on the back; seq = order taken in, within the batch
+# (sequence.py)
+META = "6"  # bump when the metadata written into photos changes, so organize() rewrites it everywhere
 
 # Common print sizes in cm; the format hints at the era (e.g. 9x13 in the 70s-80s, 10x15 from the 90s).
 PRINT_FORMATS = [(9, 9), (9, 13), (10, 10), (10, 15), (11, 15), (13, 13), (13, 18), (15, 20), (15, 21),
@@ -61,7 +64,8 @@ BOILERPLATE = re.compile(r"kodak|endura|fuji|crystal|archive|agfa|konica|paper|p
                          r"professional|protected|reproduc|interdit|gestattet|geschütz|prohibid|copy",
                          re.IGNORECASE)
 # machine lines a minilab prints (order numbers, exposure codes, digital file names)
-LAB_LINE = re.compile(r"PROFILE|\.JPG|\bJPG\b|\d{3,}\s+\d{3}|\bNN\b|\d+\.\d\s*/", re.IGNORECASE)
+LAB_LINE = re.compile(r"PROFILE|\.JPG|\bJPG\b|\d{3,}\s+\d{3}|\bNN\b|\d+\.\d\s*/|<\s*\d{1,2}\s*>|\bN\d{1,2}\b|"
+                      r"(?<![\w+-])[+-]\d\s+[+-]?\d(?!\d)", re.IGNORECASE)  # frame <12>, N12, codes +1 -1
 YEAR = re.compile(r"(?<!\d)(19[0-9]{2}|20[0-4][0-9])(?!\d)")
 DATE = re.compile(r"(?<!\d)(\d{1,2})[./-](\d{1,2})[./-](\d{2}|\d{4})(?!\d)")
 SHORT_YEAR = re.compile(r"['’`](\d{2})(?!\d)")  # '94
@@ -204,7 +208,7 @@ def photo_date(row, year, source):
     return next((d for d in dates if d and year and d.startswith(str(year))), None)
 
 
-def _write_metadata(path, row, year, source):
+def _write_metadata(path, row, year, source, seq=None):
     date = photo_date(row, year, source)
     values = {"Batch": row.get("batch"), "Paper": row.get("paper"), "Print size": row.get("print_format")}
     tags = [f"{k}/{v.replace('/', '-')}" for k, v in values.items() if v]
@@ -223,8 +227,17 @@ def _write_metadata(path, row, year, source):
     description = row.get("back_text") or ""
     turn = row.get("turn")
     metadata.write(path, description, tags, keywords, date, replaces=row.get("description"),
-                   turn=int(turn) if str(turn or "").isdigit() else None)
+                   turn=int(turn) if str(turn or "").isdigit() else None, seq=seq)
     return description
+
+
+def _sequences(rows):
+    """{id: order taken in within its batch} for every photo (sequence.py)."""
+    batches = {}
+    for r in rows:
+        key = re.sub(r"\s+", " ", unicodedata.normalize("NFC", r.get("batch") or f"bed {r.get('bed')}")).strip().casefold()
+        batches.setdefault(key, []).append(r)
+    return {pid: n for group in batches.values() for pid, n in sequence.order(group).items()}
 
 
 def _years_by_group(rows, year_of):
@@ -389,6 +402,7 @@ def organize(catalog, only=None):
     root = catalog.root
     rows = catalog.rows("status IN ('ready', 'filed')")
     written, stamped = _years_by_group(rows, _written_year), _years_by_group(rows, _stamp_year)
+    seqs = _sequences(rows)
     moved = changed = 0
     problems.clear()
     for r in rows:
@@ -399,9 +413,12 @@ def organize(catalog, only=None):
         batch = folder_name(re.sub(rf"\b{year}\b", "", r.get("batch") or "") if year else r.get("batch"))
         batch = re.sub(r"\s{2,}", " ", batch).strip(" -_") or "Unsorted"
         parts = (photo_date(r, year, source) or "").split("-") + [None, None]
+        roll, frame = sequence.frame_of(r)
+        seq = seqs.get(r["id"])
         # no back text in the name: OCR of lab stamps made names like ..._e-ndura; it is in the description
         folders, base = naming.render(template, naming.values_for(
-            year, parts[1], parts[2], batch, r["id"], slug(batch, 30), r.get("paper"), r.get("print_format")))
+            year, parts[1], parts[2], batch, r["id"], slug(batch, 30), r.get("paper"), r.get("print_format"),
+            seq, roll, frame))
         dest = root.joinpath(*folders)
         front = root / (r.get("path") or "")
         if not front.is_file():  # moved by hand, or the catalogue lost track: look for it by its id
@@ -416,7 +433,7 @@ def organize(catalog, only=None):
             back = _find_file(root, r["id"], back=True) or back
         new_back = root / BACKS / f"{base}_back{back.suffix.lower()}" if back else None
         unchanged = (new_front == front == root / r["path"] and new_back == back and r["status"] == "filed"
-                     and r.get("meta") == META
+                     and r.get("meta") == META and str(seq or "") == (r.get("seq") or "")
                      and str(year or "") == (r.get("year") or "") and source == (r.get("year_source") or ""))
         if unchanged:
             continue
@@ -424,7 +441,7 @@ def organize(catalog, only=None):
         cur_front, cur_back = front, back
         meta_ok = True
         try:
-            r["description"] = _write_metadata(front, r, year, source)
+            r["description"] = _write_metadata(front, r, year, source, seq)
         except (OSError, RuntimeError) as e:  # RuntimeError: exiv2 couldn't parse the file
             meta_ok = False  # the move goes ahead; the metadata is retried next time
             problems.append((r["id"], "its info couldn't be written into the file: " + _why(e)))
@@ -446,7 +463,8 @@ def organize(catalog, only=None):
                        back_path=str(cur_back.relative_to(root)) if cur_back else "",
                        organized=datetime.now().isoformat(timespec="seconds"),
                        meta=META if done and meta_ok else r.get("meta"),
-                       description=r.get("description"))
+                       description=r.get("description"), roll=roll, frame=str(frame or ""),
+                       seq=str(seq or "") if done and meta_ok else r.get("seq"))
         moved += cur_front != front
         changed += 1
     if changed and only is None:
