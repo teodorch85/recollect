@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import pytest
 
+import detect
 import enhance
 import fakes
 import split
@@ -68,3 +69,34 @@ def test_back_halves_follow_the_same_line():
     left, right = split.cut_back(back, ((0.5, 0.0), (0.5, 1.0)))
     assert left.shape[:2] == right.shape[:2] == (1000, 1000)
     assert left.min() == 240 and right.min() == 0
+
+
+@pytest.mark.parametrize("tilt", [0, 2.0])
+def test_a_dragged_line_on_a_rect_gives_the_two_prints_on_the_bed(tilt):
+    """The Check prints window: two prints taken for one; the line is dragged on the bed, the rects are on the bed."""
+    dpi, h, w = 150, 1755, 1275
+    img = fakes.lid(h, w)
+    a = np.radians(tilt)
+    along = np.array([np.sin(a), np.cos(a)])  # the block's long axis, as the canvas sees it
+    centre = np.array([640.0, 900.0])
+    truth = [fakes.place(img, fakes.picture(590, 885, seed=n), *(centre + s * 295 * along), tilt)
+             for n, s in enumerate((-1, 1))]
+    (merged,) = detect.find_photos(img, dpi, fakes.lid(h, w, seed=9))  # no step, no gap: taken for one
+    across = np.array([np.cos(a), -np.sin(a)])
+    p, q = centre - 300 * across, centre + 300 * across
+    got = split.rect_in_two(img, merged, dpi, tuple(p), tuple(q))
+    assert len(got) == 2
+    for (c, size, angle), (tc, tsize, tangle) in zip(got, truth):
+        assert np.hypot(c[0] - tc[0], c[1] - tc[1]) < 6
+        assert all(abs(s - t) <= 10 for s, t in zip(size, tsize))
+        assert abs(angle - tangle) < 0.8
+    assert split.rect_in_two(img, merged, dpi, tuple(p), tuple(p)) is None
+
+
+def test_crop_coordinates_round_trip():
+    rect = ((500.0, 700.0), (400.0, 300.0), 7.0)
+    x, y = split.to_crop(rect, rect[0])
+    assert (x, y) == pytest.approx((0.5, 0.5))
+    box = ((200.0, 150.0), (100.0, 80.0), 0.0)  # the middle of the crop, in crop pixels
+    assert split.from_crop(rect, box)[0] == pytest.approx(rect[0], abs=1e-6)
+    assert split.from_crop(rect, box)[2] == pytest.approx(7.0)

@@ -7,6 +7,7 @@ import pytest
 
 import bed
 import config
+import detect
 import fakes
 import library
 from conftest import files
@@ -147,3 +148,32 @@ def test_back_region_covers_the_prints():
 def test_scan_time_estimate():
     assert bed.scan_seconds(300) == 15 and bed.scan_seconds(600) == 65
     assert bed.scan_seconds(600, share=0.1) == 8  # never claims less than 8 s
+
+
+def test_save_fronts_with_the_rects_it_is_given(cat, glass):
+    """The Check prints window hands over the prints the user confirmed: only those are cut out and saved."""
+    img, empty = glass
+    rects = detect.find_photos(img, DPI, empty)
+    done = bed.save_fronts(cat, img, DPI, empty, SETTINGS, "Crete", True, rects=rects[:2])
+    assert done.message.startswith("Saved 2 fronts") and [p["rect"] for p in done.bed] == rects[:2]
+    assert files(cat) == ["_inbox/00001.jpg", "_inbox/00002.jpg"]
+    bed.drop(cat, done.bed)
+    nothing = bed.save_fronts(cat, img, DPI, empty, SETTINGS, "Crete", True, rects=[])
+    assert nothing.message.startswith("Nothing saved") and cat.rows() == []
+
+
+def test_find_fronts_has_no_doubts_about_a_normal_bed(glass):
+    img, empty = glass
+    found = bed.find_fronts(img, DPI, empty)
+    assert len(found.rects) == 3 and found.unsure == [] and found.early is None
+    assert bed.find_fronts(backs(), DPI, empty).early.message.startswith("Nothing saved: 3 prints are lying")
+    assert bed.find_fronts(fakes.lid(H, W), DPI, empty).early.message.startswith("No prints found")
+
+
+def test_find_fronts_asks_about_two_prints_taken_for_one(glass):
+    _, empty = glass
+    img = fakes.lid(H, W)  # one print right below the other, of different heights: no step, no gap
+    fakes.place(img, fakes.picture(590, 885, 1), 640, 500)
+    fakes.place(img, fakes.picture(760, 885, 2), 640, 500 + 295 + 380)
+    found = bed.find_fronts(img, DPI, empty)
+    assert len(found.rects) == 1 and found.unsure == [0]  # 15 x 23 cm is no print size

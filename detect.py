@@ -1,10 +1,17 @@
 """Find individual prints on a bed scan, straighten/crop them, and pair fronts with backs."""
+from dataclasses import dataclass
+
 import cv2
 import numpy as np
+
+import organizer
 
 WORK_DPI = 100          # detection runs on a downscaled copy at this resolution
 GAP_DPI = 200           # finer copy used to find narrow gaps between prints that nearly touch
 MIN_SIDE_IN = 1.0       # ignore anything smaller than 1 inch on a side
+ODD_AREA_CM2 = 200      # a rect this big (cm2) could hold two prints; if it is no standard size, ask
+TRIM_MAX_MM = 16        # the widest strip of plain lid trimmed off a side of a print (find_photos)
+TRIM_STEP = 10          # ... and it must end in a visible edge: the print differs from the strip by this much
 INSET_MM = 0.6          # shave this much off each edge so no lid shows at the border
 
 
@@ -17,13 +24,72 @@ def _gray_blur(img):
     return cv2.GaussianBlur(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (5, 5), 0)
 
 
-def find_photos(img, dpi, reference=None, refine=True):
+@dataclass(frozen=True)
+class Sensitivity:
+    """How hard the splitters look for prints that touch. Large prints with a very narrow gap, or a
+    step of a millimetre between them, need FINER; it also sees things that aren't there, so it is
+    only used on request (and to cross-check a normal run)."""
+    lid_min: int       # a pixel brighter than this can be lid; a gap in shadow is darker than open lid
+    tophat: int        # how much brighter than its surroundings a thin line of lid must be
+    hough: float       # inches of line that must vote for a gap line
+    line_in: float     # shortest gap line (inches)
+    line_gap: float    # a gap line may be broken by this much (inches)
+    angle: float       # gap lines may be this many degrees off straight
+    min_side: float    # smallest print a gap line may leave behind (inches)
+    straight: float    # work pixels an edge of one print may wander off a straight line
+    step: float        # a side must be this many work pixels off one straight line to show two prints
+    ratio: float       # ... and beat the wobble of the straight parts by this factor
+
+
+NORMAL = Sensitivity(lid_min=190, tophat=20, hough=0.8, line_in=1.5, line_gap=0.05, angle=8,
+                     min_side=1.5, straight=1.5, step=1.5, ratio=3.0)
+FINER = Sensitivity(lid_min=150, tophat=12, hough=0.5, line_in=1.0, line_gap=0.1, angle=10,
+                    min_side=1.2, straight=1.5, step=0.8, ratio=2.0)
+
+
+def find_photos(img, dpi, reference=None, refine=True, finer=False):
     """Return rotated rects ((cx, cy), (w, h), angle) in full-resolution pixels.
 
     `reference` is an empty-bed scan (any dpi); subtracting it makes white
     borders and white photo backs stand out from the white lid. Pass
     refine=False for backs: plain white paper looks like lid to the edge snapper.
+    finer=True looks harder for prints that nearly touch (see FINER).
     """
+    return _detect(img, dpi, reference, refine, FINER if finer else NORMAL)[0]
+
+
+def find_prints(img, dpi, reference=None, finer=False):
+    """(rects, unsure): like find_photos, plus the indices of the rects the program is not sure about,
+    for the user to check: a rect big enough to be two prints that is not a standard print size, a blob
+    that hinted at two prints without proof, or a print that the finer settings see differently.
+    Only a normal run looks for hints and cross-checks with the finer settings (a finer run is itself
+    the second opinion, and hints are everywhere with its settings)."""
+    rects, doubts = _detect(img, dpi, reference, True, FINER if finer else NORMAL)
+    unsure = {i for i, d in enumerate(doubts) if (d and not finer) or odd_size(rects[i], dpi)}  # finer hints everywhere
+    if not finer and rects:
+        again = _detect(img, dpi, reference, False, FINER)[0]
+        unsure |= {i for i, r in enumerate(rects) if not any(_same_print(r, o, dpi) for o in again)}
+    return rects, sorted(unsure)
+
+
+def odd_size(rect, dpi):
+    """True for a rect that could hold two prints (long and thin, or a big area) yet is no standard
+    print size: probably two prints taken for one (or a odd print: the user decides)."""
+    (w, h) = rect[1]
+    a, b = sorted((w / dpi * 2.54, h / dpi * 2.54))
+    if organizer.print_size(w, h, dpi)[1]:
+        return False
+    return b >= 1.8 * a or a * b >= ODD_AREA_CM2
+
+
+def _same_print(r, o, dpi):
+    """Two rects that outline the same print: centres within 0.3 in, sides within 10%."""
+    close = np.hypot(r[0][0] - o[0][0], r[0][1] - o[0][1]) < 0.3 * dpi
+    return close and all(abs(x - y) < 0.1 * max(x, y) for x, y in zip(sorted(r[1]), sorted(o[1])))
+
+
+def _detect(img, dpi, reference, refine, sens):
+    """(rects in reading order, a doubt flag for each: the blob hinted at two prints without proof)."""
     work = _to_work(img, dpi)
     g = _gray_blur(work)
     if reference is not None:
@@ -44,11 +110,16 @@ def find_photos(img, dpi, reference=None, refine=True):
     cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
     filled = cv2.morphologyEx(filled, cv2.MORPH_OPEN, np.ones((15, 15), np.uint8))
     contours, _ = cv2.findContours(filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours = _split_touching(contours, filled.shape, _gap_lines(img, dpi))
-    contours = [piece for c in contours for piece in _split_stacked(c, g)]
-
-    rects = _rects(contours, dpi)
-    return reading_order([_refine(img, r, dpi, lid) for r in rects] if refine else rects, dpi)
+    contours = _split_touching(contours, filled.shape, _gap_lines(img, dpi, sens), sens)
+    rects, doubts = [], []
+    for c in contours:
+        pieces, maybe = _stacked(c, g, sens)
+        for rect in _rects(pieces, dpi):
+            rect = _trim_lid(img, rect, dpi, lid)
+            rects.append(_refine(img, rect, dpi, lid) if refine else rect)
+            doubts.append(maybe)
+    order = reading_order(rects, dpi)
+    return order, [doubts[next(i for i, r in enumerate(rects) if r is o)] for o in order]
 
 
 def _rects(contours, dpi):
@@ -82,7 +153,7 @@ def reading_order(rects, dpi):
     return [r for row in rows for r in sorted(row, key=lambda r: r[0][0])]
 
 
-def _gap_lines(img, dpi):
+def _gap_lines(img, dpi, sens=NORMAL):
     """Long, thin, straight bright lines: the strip of lid showing between prints a few mm apart.
 
     Returns segments in WORK_DPI coordinates. Only near-horizontal/vertical lines count,
@@ -95,21 +166,34 @@ def _gap_lines(img, dpi):
     padded = cv2.copyMakeBorder(g, k, k, k, k, cv2.BORDER_CONSTANT, value=0)
     tophat = cv2.morphologyEx(padded, cv2.MORPH_TOPHAT,
                               cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))[k:-k, k:-k]
-    thin = ((tophat > 20) & (g > 190)).astype(np.uint8) * 255
-    segs = cv2.HoughLinesP(thin, 1, np.pi / 360, threshold=int(0.8 * GAP_DPI),
-                           minLineLength=int(1.5 * GAP_DPI), maxLineGap=int(0.05 * GAP_DPI))
+    thin = ((tophat > sens.tophat) & (g > sens.lid_min)).astype(np.uint8) * 255
+    segs = cv2.HoughLinesP(thin, 1, np.pi / 360, threshold=int(sens.hough * GAP_DPI),
+                           minLineLength=int(sens.line_in * GAP_DPI), maxLineGap=int(sens.line_gap * GAP_DPI))
     lines = []
     for x1, y1, x2, y2 in (segs.reshape(-1, 4) if segs is not None else []):
         ang = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1))) % 90
-        if min(ang, 90 - ang) > 8:
+        if min(ang, 90 - ang) > sens.angle:
             continue
-        # stretch each end by 0.3" so the cut reaches the blob's outer edge
+        # stretch each end (up to 0.3") so the cut reaches the blob's outer edge, but only over lid:
+        # the lid strip along the glass edge ends where the next print begins, and must not cut into it
         d = np.array([x2 - x1, y2 - y1], float)
-        d *= 0.3 * GAP_DPI / np.linalg.norm(d)
-        p1 = (np.array([x1, y1]) - d) * WORK_DPI / GAP_DPI
-        p2 = (np.array([x2, y2]) + d) * WORK_DPI / GAP_DPI
+        d /= np.linalg.norm(d)
+        a, b = np.array([x1, y1], float), np.array([x2, y2], float)
+        p1 = (a - d * _lid_run(g, a, -d, 0.3 * GAP_DPI, sens.lid_min)) * WORK_DPI / GAP_DPI
+        p2 = (b + d * _lid_run(g, b, d, 0.3 * GAP_DPI, sens.lid_min)) * WORK_DPI / GAP_DPI
         lines.append((tuple(p1.astype(int)), tuple(p2.astype(int))))
     return lines
+
+
+def _lid_run(gray, start, step, limit, lid_min):
+    """How many pixels (at most `limit`) one can walk from `start` along the unit vector `step` over
+    bright, lid-like pixels. Beyond the scanned area counts as lid."""
+    t = np.arange(1, int(limit) + 1)[:, None]
+    xy = np.rint(start + t * step).astype(int)
+    h, w = gray.shape
+    inside = (xy[:, 0] >= 0) & (xy[:, 0] < w) & (xy[:, 1] >= 0) & (xy[:, 1] < h)
+    bright = ~inside | (gray[np.clip(xy[:, 1], 0, h - 1), np.clip(xy[:, 0], 0, w - 1)] > lid_min)
+    return int(np.argmin(bright)) if not bright.all() else int(limit)
 
 
 def _is_print_shaped(c, min_side):
@@ -117,7 +201,7 @@ def _is_print_shaped(c, min_side):
     return min(w, h) >= min_side and cv2.contourArea(c) >= 0.9 * w * h
 
 
-def _split_touching(contours, shape, lines):
+def _split_touching(contours, shape, lines, sens=NORMAL):
     """Cut blobs along gap lines: separates prints that nearly touch and trims lid strips off edges.
 
     A cut is kept only when it leaves clean print-sized rectangles plus, at most, thin
@@ -126,7 +210,7 @@ def _split_touching(contours, shape, lines):
     """
     if not lines:
         return contours
-    min_side = 1.5 * WORK_DPI
+    min_side = sens.min_side * WORK_DPI
     sliver = 0.5 * WORK_DPI
     out = []
     for c in contours:
@@ -148,7 +232,6 @@ def _split_touching(contours, shape, lines):
 
 
 MIN_PIECE_IN = 2.0  # the smallest print _split_stacked will cut off a blob
-STRAIGHT_PX = 1.5   # (work pixels) how far an edge of one print may wander off a straight line
 
 
 def _fit_errors(ys, xs):
@@ -168,14 +251,21 @@ def _fit_errors(ys, xs):
     return err
 
 
-def _split_stacked(c, gray):
+def _split_stacked(c, gray, sens=NORMAL):
+    """[c], or the contours of the two prints lying edge to edge in blob c (see _stacked)."""
+    return _stacked(c, gray, sens)[0]
+
+
+def _stacked(c, gray, sens=NORMAL):
     """Two prints lying edge to edge, with no lid between them, make one blob. Its outline gives them away:
     a side of it is two straight lines with a step or a bend where the prints meet (prints laid by hand
-    are never exactly the same size and in line). Returns [c], or the contours of the two prints."""
+    are never exactly the same size and in line). Returns ([c] or the contours of the two prints, maybe):
+    maybe is True when the blob is big enough for two prints and its outline hinted at a step that was
+    too weak (or too awkward to cut) to be sure."""
     (cx, cy), (w, h), a = cv2.minAreaRect(c)
     piece = MIN_PIECE_IN * WORK_DPI
     if max(w, h) < 2 * piece or min(w, h) < piece:
-        return [c]
+        return [c], False
     # Straighten the blob so its long side runs down the rows
     pad = 10
     W, H = int(w) + 2 * pad, int(h) + 2 * pad
@@ -192,7 +282,7 @@ def _split_stacked(c, gray):
     trim = int(0.25 * WORK_DPI)  # rounded corners
     rows = rows[trim:len(rows) - trim]
     if len(rows) < 2 * piece:
-        return [c]
+        return [c], False
     sub = flat[rows]
     left = sub.argmax(axis=1).astype(float)
     right = (sub.shape[1] - 1 - sub[:, ::-1].argmax(axis=1)).astype(float)
@@ -201,7 +291,7 @@ def _split_stacked(c, gray):
     cuts = np.arange(int(piece) - trim, len(rows) - int(piece) + trim)
     cuts = cuts[(cuts - gap > 2) & (cuts + gap < len(rows) - 2)]
     if not len(cuts):
-        return [c]
+        return [c], False
     n = len(rows)
     errs = {}
     for name, xs in (("left", left), ("right", right)):
@@ -211,22 +301,24 @@ def _split_stacked(c, gray):
     total = sum(e[0] + e[1] for e in errs.values())
     best = int(np.argmin(total))
     k = cuts[best]
-    stepped = False
+    stepped = hinted = False
     for name, (ea, eb, e1) in errs.items():
         rms_a, rms_b = np.sqrt(ea[best] / (k - gap)), np.sqrt(eb[best] / (n - k - gap))
         rms_1 = np.sqrt(e1 / n)
-        if max(rms_a, rms_b) > STRAIGHT_PX:  # a side that isn't straight: torn, curled, or not a print edge
-            return [c]
-        stepped |= rms_1 >= STRAIGHT_PX and rms_1 >= 3 * max(rms_a, rms_b, 0.4)
+        if max(rms_a, rms_b) > sens.straight:  # a side that isn't straight: torn, curled, or not a print edge
+            return [c], False
+        wobble = max(rms_a, rms_b, 0.4)
+        stepped |= rms_1 >= sens.step and rms_1 >= sens.ratio * wobble
+        hinted |= rms_1 >= 0.5 * sens.step and rms_1 >= 0.5 * sens.ratio * wobble
     if not stepped:
-        return [c]
+        return [c], hinted
     # Where exactly they meet: the strongest straight edge across the picture near there
     seam = rows[k]
     gy = np.abs(cv2.Sobel(pic.astype(np.float32), cv2.CV_32F, 0, 1, ksize=3))
     near = np.r_[max(0, k - 3 * gap):k - gap, k + gap:min(n, k + 3 * gap)]  # not the corners where they meet
     x0, x1 = int(left[near].max()) + 3, int(right[near].min()) - 3
     if x1 - x0 < piece:
-        return [c]
+        return [c], True
     xs = np.arange(x0, x1)
     best_line, best_score = (seam, 0.0), -1
     for t in np.tan(np.radians(np.arange(-3, 3.01, 0.25))):
@@ -249,8 +341,67 @@ def _split_stacked(c, gray):
     pieces, _ = cv2.findContours(cut, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     pieces = sorted(pieces, key=cv2.contourArea, reverse=True)[:2]
     if len(pieces) < 2 or min(min(cv2.minAreaRect(p)[1]) for p in pieces) < 0.8 * piece:
-        return [c]
-    return pieces
+        return [c], True
+    return pieces, False
+
+
+def _lid_like(strip, axis, lid):
+    """Which lines of a strip of the straightened picture look like empty lid: about as bright as the
+    lid (even if a bit shadowed) and very plain along their length (axis: the way the mean is taken)."""
+    mean, std = strip.mean(axis=axis), strip.std(axis=axis)
+    return (mean > lid - 25) & (mean < lid + 4) & (std < 7)
+
+
+def _strip_width(flags, level, reach, dpi):
+    """Pixels of plain lid at the start of a side, given which of its lines look like lid (`flags`) and
+    their brightness (`level`). 0 unless the strip stops within `reach` pixels at a clear edge: a plain
+    patch inside the picture (sky, a white wall) fills the whole band or ends without one."""
+    start = int(1.5 / 25.4 * dpi)  # the very first lines may be the blob's rim, not yet lid
+    first = np.flatnonzero(flags[:start + 1])
+    if not len(first):
+        return 0
+    end = first[0]
+    while end < reach and flags[end]:
+        end += 1
+    if end >= reach or end - first[0] < int(1.5 / 25.4 * dpi):
+        return 0
+    k = max(3, int(1.0 / 25.4 * dpi))
+    inner, strip = level[end + 2:end + 2 + k], level[max(first[0], end - k):end]
+    if len(inner) < k or abs(inner.mean() - strip.mean()) < TRIM_STEP:
+        return 0
+    return int(end)
+
+
+def _trim_lid(img, rect, dpi, lid):
+    """Cut strips of plain lid off the sides of a rough rect, wider than _refine looks (it only sees ±2.5 mm).
+
+    A strip of lid beside a print stays glued to it when the print lies a few mm from the glass edge (the
+    outline of the blob is then straight there), and the strip is not a gap line. Only a strip that runs
+    along a whole side, looks like lid (see _lid_like) and ends in a clear edge goes, and the print keeps
+    at least MIN_PIECE_IN on each side, so a plain bright area inside a picture is left alone.
+    """
+    (cx, cy), (w, h), a = rect
+    pic = crop(img, rect, dpi, inset_mm=0)
+    if pic.size == 0:
+        return rect
+    g = cv2.GaussianBlur(cv2.cvtColor(pic, cv2.COLOR_BGR2GRAY), (3, 3), 0).astype(np.float32)
+    H, W = g.shape
+    core_r, core_c = slice(int(0.1 * H), int(0.9 * H)), slice(int(0.1 * W), int(0.9 * W))
+    reach = int(TRIM_MAX_MM / 25.4 * dpi)
+    cols, rows = _lid_like(g[core_r, :], 0, lid), _lid_like(g[:, core_c], 1, lid)
+    col_level, row_level = g[core_r, :].mean(axis=0), g[:, core_c].mean(axis=1)
+    left, right = (_strip_width(cols[::s], col_level[::s], reach, dpi) for s in (1, -1))
+    top, bottom = (_strip_width(rows[::s], row_level[::s], reach, dpi) for s in (1, -1))
+    keep = MIN_PIECE_IN * dpi
+    if W - left - right < keep:
+        left = right = 0
+    if H - top - bottom < keep:
+        top = bottom = 0
+    if not (left or right or top or bottom):
+        return rect
+    inv = np.linalg.inv(cv2.getRotationMatrix2D((0, 0), a, 1.0)[:, :2])
+    dx, dy = inv @ np.array([(left - right) / 2, (top - bottom) / 2])  # straightened offset -> scan coordinates
+    return (float(cx + dx), float(cy + dy)), (float(w - left - right), float(h - top - bottom)), float(a)
 
 
 def _refine(img, rect, dpi, lid):
@@ -267,10 +418,6 @@ def _refine(img, rect, dpi, lid):
     H, W = g.shape
     core_r, core_c = slice(int(0.1 * H), int(0.9 * H)), slice(int(0.1 * W), int(0.9 * W))
 
-    def lid_like(strip, axis):
-        mean, std = strip.mean(axis=axis), strip.std(axis=axis)
-        return (mean > lid - 25) & (mean < lid + 4) & (std < 7)
-
     rot = cv2.getRotationMatrix2D((0, 0), a, 1.0)[:, :2]
     inv = np.linalg.inv(rot)
 
@@ -280,8 +427,8 @@ def _refine(img, rect, dpi, lid):
         xy = pts @ inv.T + (cx, cy)
         return (xy[:, 0] < 0) | (xy[:, 0] >= img.shape[1]) | (xy[:, 1] < 0) | (xy[:, 1] >= img.shape[0])
 
-    cols = lid_like(g[core_r, :], 0) | outside(np.arange(W) - W / 2 + 0.5, 0)
-    rows = lid_like(g[:, core_c], 1) | outside(np.arange(H) - H / 2 + 0.5, 1)
+    cols = _lid_like(g[core_r, :], 0, lid) | outside(np.arange(W) - W / 2 + 0.5, 0)
+    rows = _lid_like(g[:, core_c], 1, lid) | outside(np.arange(H) - H / 2 + 0.5, 1)
 
     def edge(flags):  # just inside the innermost lid line in the band; no lid there -> keep rough edge
         hits = np.flatnonzero(flags[:2 * m])
