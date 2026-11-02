@@ -73,20 +73,43 @@ def no_answers(photos):
     return [None] * len(photos), None
 
 
-def save_fronts(cat, img, dpi, reference, s, batch, scan_backs, orient=no_answers, job=library.Job(),
-                started=None):
-    """Cut the prints out of a bed scan, save and catalogue them. With scan_backs they wait for their
-    backs (Fronts.bed); otherwise they are filed at once. orient(photos) -> (answers, problem): which
-    way is up (rotate.orient_all), or no_answers."""
-    started = started or time.time()
+@dataclass
+class Found:
+    rects: list                                 # the prints found on the glass
+    unsure: list = field(default_factory=list)  # indices of rects to check with the user before saving
+    early: Fronts = None                        # nothing to save or check: why (prints face-down, none found)
+
+
+def find_fronts(img, dpi, reference, check=True):
+    """Look for the prints on a bed scan of fronts. With check, also say which ones the program is not
+    sure about (detect.find_prints): that costs a second look with the finer settings."""
     backs = detect.find_backs(img, dpi, reference)
     if backs:  # saving these would file blank paper as photos
-        return Fronts(detect.draw_overlay(img, backs, alert=range(len(backs))),
-                      f"Nothing saved: {len(backs)} print{'s are' if len(backs) > 1 else ' is'} lying back-side "
-                      "down (red). Turn them face-down and press Space again.")
-    rects = detect.find_photos(img, dpi, reference)
+        return Found([], early=Fronts(
+            detect.draw_overlay(img, backs, alert=range(len(backs))),
+            f"Nothing saved: {len(backs)} print{'s are' if len(backs) > 1 else ' is'} lying back-side "
+            "down (red). Turn them face-down and press Space again."))
+    rects, unsure = detect.find_prints(img, dpi, reference) if check else (detect.find_photos(img, dpi, reference), [])
     if not rects:
-        return Fronts(detect.draw_overlay(img, []), "No prints found on the glass. Check placement and try again.")
+        return Found([], early=Fronts(detect.draw_overlay(img, []),
+                                      "No prints found on the glass. Check placement and try again."))
+    return Found(rects, unsure)
+
+
+def save_fronts(cat, img, dpi, reference, s, batch, scan_backs, orient=no_answers, job=library.Job(),
+                started=None, rects=None):
+    """Cut the prints out of a bed scan, save and catalogue them. With scan_backs they wait for their
+    backs (Fronts.bed); otherwise they are filed at once. orient(photos) -> (answers, problem): which
+    way is up (rotate.orient_all), or no_answers. rects: where the prints are, when already found
+    (and confirmed by the user); otherwise they are looked for here."""
+    started = started or time.time()
+    if rects is None:
+        found = find_fronts(img, dpi, reference, check=False)
+        if found.early:
+            return found.early
+        rects = found.rects
+    if not rects:  # the user took them all away
+        return Fronts(detect.draw_overlay(img, []), "Nothing saved: no prints were left to save.")
     out, first = library.inbox(cat), library.next_id(cat)
     scanned = datetime.now().isoformat(timespec="seconds")
     bed, stamps = [], 0

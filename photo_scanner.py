@@ -24,6 +24,7 @@ import cv2
 from PIL import Image, ImageTk
 
 import bed
+import checkprints
 import config
 import detect
 import dialogs
@@ -47,7 +48,8 @@ JOB_TITLES = {"_do_fronts": "Fronts scanned", "_do_backs": "Backs read, photos f
               "_do_find_duplicates": "Duplicate check finished", "_do_calibrate": "Scanner calibrated",
               "_do_reset_scanner": "Scanner reset", "_do_update": "Update downloaded",
               "_do_turn_batch": "Photos turned upright", "_do_refile": "Library refiled",
-              "_do_split": "Photo split"}
+              "_do_split": "Photo split", "_do_save_checked": "Fronts saved",
+              "_do_find_again": "Prints found again"}
 SCANNER_JOBS = ("_do_fronts", "_do_backs", "_do_preview", "_do_calibrate")
 UPDATE_CHECK_MS = 60_000  # how often to look for a newer version in this folder (from source)
 ONLINE_CHECK_S = 6 * 3600  # how often ReCollect.exe asks GitHub for a new release
@@ -85,6 +87,9 @@ class App:
         self.job = AppJob(self)
         self.state = "front"          # "front" -> waiting for fronts, "back" -> waiting for backs
         self.bed = []                 # [{id, rect, dpi}] for prints on the glass right now
+        self.front_scan = None        # (full-resolution scan, dpi) of the fronts on the glass, for "Find prints again"
+        self._check_win = None        # the Check prints window, while open
+        self._checked = None          # (rects, started, replacing) the user confirmed, for the job that saves them
         self.reference = cv2.imread(str(REFERENCE_FILE)) if REFERENCE_FILE.exists() else None
         self._cat = None
         self._review = None  # the Review photos window, while open
@@ -268,6 +273,10 @@ class App:
         row.pack(fill="x", pady=(8, 0))
         self.skip_btn = ttk.Button(row, text="No backs for this bed  [N]", command=self.skip_backs)
         self.skip_btn.pack(side="left", fill="x", expand=True)
+        row = ttk.Frame(btns)
+        row.pack(fill="x", pady=(6, 0))
+        self.again_btn = ttk.Button(row, text="Find prints again", command=self.find_again)
+        self.again_btn.pack(side="left", fill="x", expand=True)
         self.redo_btn = ttk.Button(row, text="Redo fronts", command=self.redo_fronts)
         self.redo_btn.pack(side="left", padx=(6, 0))
         self.count_label = ttk.Label(btns, textvariable=self.count_var, style="Muted.TLabel")
@@ -351,15 +360,18 @@ class App:
             self.main_btn.config(state="disabled")
             self.skip_btn.config(state="disabled")
             self.redo_btn.config(state="disabled")
+            self.again_btn.config(state="disabled")
         elif self.state == "front":
             self.main_btn.config(text="Scan FRONTS  [Space]", state="normal")
             self.skip_btn.config(state="disabled")
             self.redo_btn.config(state="disabled")
+            self.again_btn.config(state="disabled")
             self.status.set("Place prints face-down with ~1 cm gaps, close the lid, press Space.")
         else:
             self.main_btn.config(text="Scan BACKS  [Space]", state="normal")
             self.skip_btn.config(state="normal")
             self.redo_btn.config(state="normal")
+            self.again_btn.config(state="normal" if self.front_scan is not None else "disabled")
             self.status.set(f"Saved {len(self.bed)} fronts. Flip each print over IN THE SAME SPOT, "
                             "close the lid, press Space.  (N = no backs for this bed)")
         try:
@@ -605,7 +617,7 @@ class App:
         self._run(self._do_calibrate, "Scanning the empty bed for calibration…")
 
     def main_action(self):
-        if self.busy:
+        if self.busy or self._checking():
             return
         self._save_settings()
         if self.state == "front":
@@ -744,7 +756,7 @@ class App:
             organizer.remove_photo(self._catalog(), p["id"])
         self.bed = [p for p in self.bed if not p.get("dup")]
         if not self.bed:
-            self.state = "front"
+            self.state, self.front_scan = "front", None
         self._refresh()
         self.status.set(f"Removed {len(dups)} duplicate(s) (in the Recycle Bin). "
                         + ("Flip the other prints IN THE SAME SPOT and press Space." if self.bed else
@@ -760,16 +772,45 @@ class App:
         for p in self.bed:
             self._catalog().upsert(p["id"], back_status="not scanned")
         summary = library.file_photos(self._catalog(), [p["id"] for p in self.bed])
-        self.state, self.bed = "front", []
+        self.state, self.bed, self.front_scan = "front", [], None
         self._refresh()
         self.status.set(summary + ". Place the next prints and press Space.")
+
+    def find_again(self):
+        """Look for the prints in the same scan again with finer settings (prints large, gaps very small)."""
+        if self.busy or self.state != "back" or self.front_scan is None:
+            return
+        self._run(self._do_find_again, "Looking for the prints again, more carefully…")
+
+    def _checking(self):
+        return bool(getattr(self, "_check_win", None) and self._check_win.win.winfo_exists())
+
+    def _check_prints(self, rects, unsure, started, finer=False, replacing=False):
+        """Open the Check prints window on the scan; Save runs the job that saves what was confirmed."""
+        img, dpi = self.front_scan
+
+        def save(confirmed):
+            self._checked = (confirmed, started, replacing)
+            self._run(self._do_save_checked, f"Saving {len(confirmed)} photo{'s' if len(confirmed) != 1 else ''}…")
+
+        def cancel():
+            if replacing:  # the fronts saved before are untouched
+                self.status.set("Kept the fronts as they were.")
+                return
+            self.front_scan = None
+            self._refresh()
+            self.status.set("Nothing saved; press Space to scan again.")
+
+        self._check_win = checkprints.CheckPrints(
+            self, img, dpi, rects, unsure, save, cancel, finer_already=finer,
+            find_again=lambda im, d: detect.find_prints(im, d, self.reference, finer=True))
 
     def redo_fronts(self):
         """Delete the fronts just saved (e.g. two prints merged) so the bed can be rescanned."""
         if self.busy or self.state != "back":
             return
         bed.drop(self._catalog(), self.bed)
-        self.state, self.bed = "front", []
+        self.state, self.bed, self.front_scan = "front", [], None
         self._refresh()
         self.status.set("Last fronts deleted. Fix the placement, then press Space to scan again.")
 
@@ -828,6 +869,8 @@ class App:
                                       "⚠ " + payload if kind == "error" else "Done.")
                 self._phase = None
                 self.bar["value"] = 1.0 if kind == "done" else 0
+                if kind != "done" and self.state == "front":
+                    self.front_scan = None  # a scan that failed or was cancelled has no prints waiting
                 if kind == "cancelled":
                     self.cancelling.clear()
                     self._refresh()
@@ -886,14 +929,49 @@ class App:
         dpi, started = int(self.dpi_var.get()), time.time()
         self.job.phase(0, 0.6, bed.scan_seconds(dpi))
         img = scan_bed(dpi)
+        self.front_scan = (img, dpi)  # kept until the bed is done: "Find prints again" looks at it again
         self.job.progress(0.6)
         self.job.stop_point()
+        found = bed.find_fronts(img, dpi, self.reference)
+        if found.early:  # prints face-down, or none
+            self.front_scan = None
+            return found.early.view, found.early.message
+        if found.unsure:  # nothing is saved until the user has looked at the boxes
+            names = detect.print_names(found.unsure)
+            return (detect.draw_overlay(img, found.rects, alert=found.unsure),
+                    f"Found {len(found.rects)} print{'s' if len(found.rects) != 1 else ''}, but I am not sure "
+                    f"about {names} (red). "
+                    "Nothing is saved yet: check them in the window.",
+                    lambda: self._check_prints(found.rects, found.unsure, started))
+        return self._save_rects(img, dpi, found.rects, started)
+
+    def _save_rects(self, img, dpi, rects, started):
+        """Save the fronts at these rects (in the job thread). Returns what a job returns: (view, message, *then)."""
         done = bed.save_fronts(self._catalog(), img, dpi, self.reference, self.s, self.batch_var.get().strip(),
-                               self.backs_var.get(), self._orient, self.job, started)
+                               self.backs_var.get(), self._orient, self.job, started, rects=rects)
         if done.bed:
             self.state, self.bed = "back", done.bed
+        else:
+            self.front_scan = None  # filed already, or nothing saved
         then = [lambda: self._set_clickable(img, *done.shown)] if done.shown else []
         return (done.view, done.message, *then)
+
+    def _do_save_checked(self):
+        """Save the prints the user confirmed in the Check prints window. From "Find prints again" the fronts
+        saved before are replaced (dropped first, or the new ones would be taken for duplicates of them)."""
+        rects, started, replacing = self._checked
+        img, dpi = self.front_scan
+        if replacing:
+            bed.drop(self._catalog(), self.bed)
+            self.state, self.bed = "front", []
+        return self._save_rects(img, dpi, rects, started)
+
+    def _do_find_again(self):
+        img, dpi = self.front_scan
+        rects, unsure = detect.find_prints(img, dpi, self.reference, finer=True)
+        return (None, f"Looked again, more carefully: {len(rects)} print{'s' if len(rects) != 1 else ''} "
+                      f"(saved now: {len(self.bed)}). Check them in the window.",
+                lambda: self._check_prints(rects, unsure, time.time(), finer=True, replacing=True))
 
     def _do_preview(self):
         self.job.phase(0, 0.9, bed.scan_seconds(bed.PREVIEW_DPI))
@@ -914,7 +992,7 @@ class App:
         self.job.progress(0.4)
         self.job.stop_point()  # cancelled: the bed stays waiting for its backs
         view, message = bed.save_backs(self._catalog(), img, dpi, self.bed, self.reference, self.s, self.job)
-        self.state, self.bed = "front", []
+        self.state, self.bed, self.front_scan = "front", [], None
         return view, message
 
 

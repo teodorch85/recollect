@@ -128,6 +128,38 @@ def boxes(img, line, dpi):
     return rects
 
 
+def _crop_frame(rect):
+    """(centre, size, turn): how detect.crop lays out `rect` — the straightened crop is `size` pixels with
+    its middle on the rect's centre; `turn` is the 2x2 matrix that takes bed offsets to crop offsets."""
+    (cx, cy), (w, h), a = rect
+    return (cx, cy), (int(round(w)), int(round(h))), cv2.getRotationMatrix2D((0, 0), a, 1.0)[:, :2]
+
+
+def to_crop(rect, pt):
+    """A bed point (x, y) as a fraction (0-1) of the straightened crop of `rect`."""
+    (cx, cy), (cw, ch), turn = _crop_frame(rect)
+    u, v = turn @ (pt[0] - cx, pt[1] - cy) + (cw / 2, ch / 2)
+    return u / cw, v / ch
+
+
+def from_crop(rect, box):
+    """A rect found in the straightened crop of `rect` (crop pixels) as a rect on the bed."""
+    (cx, cy), (cw, ch), turn = _crop_frame(rect)
+    (bx, by), size, a = box
+    dx, dy = np.linalg.inv(turn) @ (bx - cw / 2, by - ch / 2)
+    return (float(cx + dx), float(cy + dy)), size, float(a + rect[2])
+
+
+def rect_in_two(img, rect, dpi, p, q):
+    """The print `rect` of a bed scan holds two prints: where each lies, as two rects on the bed (left or top
+    one first), cut along the line you dragged from bed point p to bed point q. None if the drag is no line."""
+    line = line_through(to_crop(rect, p), to_crop(rect, q))
+    if line is None:
+        return None
+    crop = detect.crop(img, rect, dpi, inset_mm=0)
+    return [from_crop(rect, box) for box in boxes(crop, line, dpi)]
+
+
 def cut(img, line, dpi):
     """The two prints of a front, straightened and without lid, the left or top one first."""
     return [detect.crop(img, r, dpi, inset_mm=0.3) for r in boxes(img, line, dpi)]

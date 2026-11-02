@@ -55,3 +55,100 @@ def test_a_turned_photo_is_drawn_turned():
     (cx, cy), (w, h), _ = truth[0]
     box = turned[int(cy * f - h * f / 2) + 3:int(cy * f + h * f / 2) - 3, int(cx * f - w * f / 2) + 3:int(cx * f - h * f / 2) - 3]
     assert (np.abs(box.astype(int) - detect.TURNED_BG).sum(axis=2) < 10).mean() > 0.9  # space beside the upright photo
+
+
+def strip_scene(mm):
+    """Two big prints, one right above the other. The top one lies `mm` from the left edge of the glass, with
+    the lid beside it a little in shadow; the bottom one touches that edge."""
+    left = int(mm / 25.4 * DPI)
+    img = fakes.lid(H, W)
+    img[105:695, :left] = img[105:695, :left] - 12
+    return img, [fakes.place(img, fakes.picture(590, 885, seed=0), left + 442, 400),
+                 fakes.place(img, fakes.picture(590, 885, seed=1), 442, 990)]
+
+
+@pytest.mark.parametrize("refine", [True, False])
+@pytest.mark.parametrize("mm", [6, 14])
+def test_lid_between_the_glass_edge_and_a_stacked_print_is_trimmed(mm, refine):
+    img, truth = strip_scene(mm)
+    found = detect.find_photos(img, DPI, EMPTY, refine=refine)
+    assert len(found) == 2
+    for (c, size, a), (tc, tsize, ta) in zip(found, truth):
+        assert np.hypot(c[0] - tc[0], c[1] - tc[1]) < 6
+        assert all(abs(s - t) <= 8 for s, t in zip(size, tsize))  # the top box was 40-70 px too wide
+        assert abs(a - ta) < 0.6
+
+
+def test_plain_sky_along_a_side_is_not_taken_for_lid():
+    img = fakes.lid(H, W)
+    p = fakes.picture(885, 590, seed=3, sky=True)
+    p[:60] = (235, 235, 235)  # a band of white sky, 10 mm of it, along the whole top
+    truth = fakes.place(img, p, 640, 700)
+    (found,) = detect.find_photos(img, DPI, EMPTY)
+    assert all(abs(s - t) <= 8 for s, t in zip(sorted(found[1]), sorted(truth[1])))
+
+
+def test_a_print_keeps_two_inches_whatever_is_trimmed():
+    img = fakes.lid(H, W)
+    p = fakes.picture(300, 300, seed=4)
+    p[:, :40] = 228  # lid-like left strip on a small print: trimming 40 px would leave under 2 in
+    rect = fakes.place(img, p, 640, 700)
+    assert detect._trim_lid(img, rect, DPI, 228.0) == rect
+
+
+def shadowed_gap(v, gap=4):
+    """Two big prints one above the other with a narrow gap whose lid is only `v` bright (in their shadow)."""
+    img = fakes.lid(H, W)
+    img[692:695 + gap + 3, 158:1042] = v  # just the gap, between the two prints' sides
+    return img, [fakes.place(img, fakes.picture(590, 885, seed=0), 600, 400),
+                 fakes.place(img, fakes.picture(590, 885, seed=1), 600, 400 + 590 + gap)]
+
+
+def test_finer_settings_find_prints_with_a_dim_narrow_gap():
+    img, truth = shadowed_gap(165)
+    assert len(detect.find_photos(img, DPI, EMPTY)) == 1  # the gap is too dark for the normal settings
+    found = detect.find_photos(img, DPI, EMPTY, finer=True)
+    assert len(found) == 2
+    for (c, size, a), (tc, tsize, ta) in zip(found, truth):
+        assert np.hypot(c[0] - tc[0], c[1] - tc[1]) < 8 and all(abs(s - t) <= 10 for s, t in zip(size, tsize))
+
+
+def test_finer_settings_find_prints_with_a_one_millimetre_step():
+    img = fakes.lid(H, W)
+    fakes.place(img, fakes.picture(590, 885, seed=0), 600, 400)
+    fakes.place(img, fakes.picture(590, 885, seed=1), 600 + 7, 400 + 590)  # 1.2 mm to the side, touching
+    assert len(detect.find_photos(img, DPI, EMPTY)) == 1
+    assert len(detect.find_photos(img, DPI, EMPTY, finer=True)) == 2
+
+
+def test_finer_settings_leave_single_prints_whole():
+    for name in SINGLE:
+        img, _ = scene(SINGLE[name])
+        assert len(detect.find_photos(img, DPI, EMPTY, finer=True)) == 1
+
+
+@pytest.mark.parametrize("name", list(TOUCHING) + list(SINGLE))
+def test_find_prints_is_sure_about_prints_it_split_or_left_whole(name):
+    img, _ = scene((TOUCHING | SINGLE)[name])
+    rects, unsure = detect.find_prints(img, DPI, EMPTY)
+    assert rects == detect.find_photos(img, DPI, EMPTY) and unsure == []
+
+
+def test_find_prints_doubts_a_step_it_is_not_sure_of():
+    img = fakes.lid(H, W)
+    fakes.place(img, fakes.picture(590, 885, seed=0), 600, 400)
+    fakes.place(img, fakes.picture(590, 885, seed=1), 600 + 7, 400 + 590)
+    rects, unsure = detect.find_prints(img, DPI, EMPTY)
+    assert len(rects) == 1 and unsure == [0]  # taken for one, but the finer settings see two
+    rects, unsure = detect.find_prints(img, DPI, EMPTY, finer=True)
+    assert len(rects) == 2 and unsure == []
+
+
+def test_a_rect_that_could_be_two_prints_but_is_no_print_size_is_odd():
+    mm = DPI / 25.4
+    assert not detect.odd_size(((0, 0), (150 * mm, 100 * mm), 0), DPI)    # 10x15
+    assert not detect.odd_size(((0, 0), (200 * mm, 150 * mm), 0), DPI)    # 15x20
+    assert detect.odd_size(((0, 0), (230 * mm, 150 * mm), 0), DPI)        # 15x23: big, no such print
+    assert detect.odd_size(((0, 0), (300 * mm, 100 * mm), 0), DPI)        # 10x30: two 10x15 end to end
+    assert not detect.odd_size(((0, 0), (110 * mm, 80 * mm), 0), DPI)     # 8x11 standard
+    assert not detect.odd_size(((0, 0), (120 * mm, 75 * mm), 0), DPI)     # small and odd: no reason to doubt
