@@ -152,12 +152,14 @@ def from_crop(rect, box):
 
 def rect_in_two(img, rect, dpi, p, q):
     """The print `rect` of a bed scan holds two prints: where each lies, as two rects on the bed (left or top
-    one first), cut along the line you dragged from bed point p to bed point q. None if the drag is no line."""
+    one first), cut along the line you dragged from bed point p to bed point q. None if the drag is no line,
+    or the cut leaves a piece too small to be a print (a line along the box's edge or across a corner)."""
     line = line_through(to_crop(rect, p), to_crop(rect, q))
     if line is None:
         return None
     crop = detect.crop(img, rect, dpi, inset_mm=0)
-    return [from_crop(rect, box) for box in boxes(crop, line, dpi)]
+    two = [from_crop(rect, box) for box in boxes(crop, line, dpi)]
+    return two if all(min(r[1]) >= detect.MIN_SIDE_IN * dpi for r in two) else None
 
 
 def cut(img, line, dpi):
