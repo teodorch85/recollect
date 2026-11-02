@@ -1,5 +1,5 @@
 """Find individual prints on a bed scan, straighten/crop them, and pair fronts with backs."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import cv2
 import numpy as np
@@ -44,7 +44,10 @@ class Sensitivity:
 NORMAL = Sensitivity(lid_min=190, tophat=20, hough=0.8, line_in=1.5, line_gap=0.05, angle=8,
                      min_side=1.5, straight=1.5, step=1.5, ratio=3.0)
 FINER = Sensitivity(lid_min=150, tophat=12, hough=0.5, line_in=1.0, line_gap=0.1, angle=10,
-                    min_side=1.2, straight=1.5, step=0.8, ratio=2.0)
+                    min_side=1.2, straight=1.5, step=1.1, ratio=2.0)
+# The second opinion on a normal run: FINER's gap lines, but not its step test, which a single print's
+# outline (it jogs by up to ~1.2 work pixels) passes now and then; that would ask about ordinary beds.
+CROSS_CHECK = replace(FINER, step=NORMAL.step, ratio=NORMAL.ratio)
 
 
 def find_photos(img, dpi, reference=None, refine=True, finer=False):
@@ -67,7 +70,7 @@ def find_prints(img, dpi, reference=None, finer=False):
     rects, doubts = _detect(img, dpi, reference, True, FINER if finer else NORMAL)
     unsure = {i for i, d in enumerate(doubts) if (d and not finer) or odd_size(rects[i], dpi)}  # finer hints everywhere
     if not finer and rects:
-        again = _detect(img, dpi, reference, False, FINER)[0]
+        again = _detect(img, dpi, reference, False, CROSS_CHECK)[0]
         unsure |= {i for i, r in enumerate(rects) if not any(_same_print(r, o, dpi) for o in again)}
     return rects, sorted(unsure)
 
@@ -309,7 +312,7 @@ def _stacked(c, gray, sens=NORMAL):
             return [c], False
         wobble = max(rms_a, rms_b, 0.4)
         stepped |= rms_1 >= sens.step and rms_1 >= sens.ratio * wobble
-        hinted |= rms_1 >= 0.5 * sens.step and rms_1 >= 0.5 * sens.ratio * wobble
+        hinted |= rms_1 >= sens.step and rms_1 >= 0.5 * sens.ratio * wobble  # a single print's outline jogs up to ~1.2
     if not stepped:
         return [c], hinted
     # Where exactly they meet: the strongest straight edge across the picture near there
@@ -376,11 +379,15 @@ def _trim_lid(img, rect, dpi, lid):
     """Cut strips of plain lid off the sides of a rough rect, wider than _refine looks (it only sees ±2.5 mm).
 
     A strip of lid beside a print stays glued to it when the print lies a few mm from the glass edge (the
-    outline of the blob is then straight there), and the strip is not a gap line. Only a strip that runs
-    along a whole side, looks like lid (see _lid_like) and ends in a clear edge goes, and the print keeps
-    at least MIN_PIECE_IN on each side, so a plain bright area inside a picture is left alone.
+    outline of the blob is then straight there), and the strip is not a gap line. Only a side along the
+    edge of the scan is looked at, and only a strip that runs along all of it, looks like lid (see _lid_like)
+    and ends in a clear edge goes; the print keeps at least MIN_PIECE_IN each way. So a plain bright area
+    inside a picture (grey sky, a white border) is left alone on prints that lie away from the glass edge.
     """
     (cx, cy), (w, h), a = rect
+    edges = _on_scan_edge(img.shape, rect, dpi)
+    if not any(edges):
+        return rect
     pic = crop(img, rect, dpi, inset_mm=0)
     if pic.size == 0:
         return rect
@@ -392,6 +399,7 @@ def _trim_lid(img, rect, dpi, lid):
     col_level, row_level = g[core_r, :].mean(axis=0), g[:, core_c].mean(axis=1)
     left, right = (_strip_width(cols[::s], col_level[::s], reach, dpi) for s in (1, -1))
     top, bottom = (_strip_width(rows[::s], row_level[::s], reach, dpi) for s in (1, -1))
+    left, right, top, bottom = (n if at_edge else 0 for n, at_edge in zip((left, right, top, bottom), edges))
     keep = MIN_PIECE_IN * dpi
     if W - left - right < keep:
         left = right = 0
@@ -402,6 +410,19 @@ def _trim_lid(img, rect, dpi, lid):
     inv = np.linalg.inv(cv2.getRotationMatrix2D((0, 0), a, 1.0)[:, :2])
     dx, dy = inv @ np.array([(left - right) / 2, (top - bottom) / 2])  # straightened offset -> scan coordinates
     return (float(cx + dx), float(cy + dy)), (float(w - left - right), float(h - top - bottom)), float(a)
+
+
+def _on_scan_edge(shape, rect, dpi, mm=2.0):
+    """(left, right, top, bottom) of the straightened rect: is that side within `mm` of the edge of the scan?"""
+    (cx, cy), (w, h), a = rect
+    inv = np.linalg.inv(cv2.getRotationMatrix2D((0, 0), a, 1.0)[:, :2])
+    near = mm / 25.4 * dpi
+    out = []
+    for ends in (((-w, -h), (-w, h)), ((w, -h), (w, h)), ((-w, -h), (w, -h)), ((-w, h), (w, h))):
+        xy = np.array(ends, float) / 2 @ inv.T + (cx, cy)  # the side's two corners on the scan
+        gap = np.minimum.reduce([xy[:, 0], xy[:, 1], shape[1] - 1 - xy[:, 0], shape[0] - 1 - xy[:, 1]])
+        out.append(bool(gap.max() <= near))
+    return tuple(out)
 
 
 def _refine(img, rect, dpi, lid):
