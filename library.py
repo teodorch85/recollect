@@ -107,9 +107,10 @@ def refile(cat):
     return say(f"Naming template applied: {moved} photo(s) moved or renamed.")
 
 
-def turn_photo(cat, pid, delta):
+def turn_photo(cat, pid, delta, write=True):
     """Turn a photo a quarter turn: only its EXIF orientation changes, not its pixels. Returns what
-    happened, for the status line."""
+    happened, for the status line. write=False: only the catalogue changes now; call write_turn() after
+    (so a window can show the turn first: writing the file takes a moment)."""
     rows = cat.rows("id = ?", (pid,))
     if not rows:
         return f"{pid} is no longer in the library."
@@ -118,9 +119,16 @@ def turn_photo(cat, pid, delta):
         return f"{pid} is a TIFF: turning in ReCollect works for JPEG photos only. Turn it in your photo app instead."
     turn = (int(row.get("turn") or 0) + delta) % 360
     cat.upsert(pid, turn=turn, meta="")  # meta="": organize() writes the orientation into the file
-    if row["status"] in ("ready", "filed"):
-        organizer.organize(cat, only={pid})  # waiting for backs: written when it is filed
+    if write:
+        write_turn(cat, pid)
     return say(f"{pid} turned {turn}° clockwise. Only the orientation tag changes.")
+
+
+def write_turn(cat, pid):
+    """Write a photo's new orientation into its file (one waiting for its back gets it when it is filed)."""
+    rows = cat.rows("id = ?", (pid,))
+    if rows and rows[0]["status"] in ("ready", "filed"):
+        organizer.organize(cat, only={pid})
 
 
 def turn_upright(cat, batch, key, quality, job=Job(), orient_all=rotate.orient_all):

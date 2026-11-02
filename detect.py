@@ -45,6 +45,7 @@ def find_photos(img, dpi, reference=None, refine=True):
     filled = cv2.morphologyEx(filled, cv2.MORPH_OPEN, np.ones((15, 15), np.uint8))
     contours, _ = cv2.findContours(filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contours = _split_touching(contours, filled.shape, _gap_lines(img, dpi))
+    contours = [piece for c in contours for piece in _split_stacked(c, g)]
 
     rects = _rects(contours, dpi)
     return reading_order([_refine(img, r, dpi, lid) for r in rects] if refine else rects, dpi)
@@ -144,6 +145,112 @@ def _split_touching(contours, shape, lines):
         else:
             out.append(c)
     return out
+
+
+MIN_PIECE_IN = 2.0  # the smallest print _split_stacked will cut off a blob
+STRAIGHT_PX = 1.5   # (work pixels) how far an edge of one print may wander off a straight line
+
+
+def _fit_errors(ys, xs):
+    """For every way of cutting the rows in two, the squared error of fitting a straight line to each
+    part: (err of rows[:i], err of rows[i:]) for each i, via running sums."""
+    def running(v):
+        return np.concatenate([[0.0], np.cumsum(v)])
+    n, sy, sx = running(np.ones_like(ys)), running(ys), running(xs)
+    syy, sxx, sxy = running(ys * ys), running(xs * xs), running(ys * xs)
+
+    def err(a, b):  # rows a..b-1 (arrays of indices)
+        cnt, y, x = n[b] - n[a], sy[b] - sy[a], sx[b] - sx[a]
+        vy = (syy[b] - syy[a]) - y * y / np.maximum(cnt, 1)
+        vx = (sxx[b] - sxx[a]) - x * x / np.maximum(cnt, 1)
+        cxy = (sxy[b] - sxy[a]) - x * y / np.maximum(cnt, 1)
+        return np.maximum(vx - cxy * cxy / np.maximum(vy, 1e-9), 0)
+    return err
+
+
+def _split_stacked(c, gray):
+    """Two prints lying edge to edge, with no lid between them, make one blob. Its outline gives them away:
+    a side of it is two straight lines with a step or a bend where the prints meet (prints laid by hand
+    are never exactly the same size and in line). Returns [c], or the contours of the two prints."""
+    (cx, cy), (w, h), a = cv2.minAreaRect(c)
+    piece = MIN_PIECE_IN * WORK_DPI
+    if max(w, h) < 2 * piece or min(w, h) < piece:
+        return [c]
+    # Straighten the blob so its long side runs down the rows
+    pad = 10
+    W, H = int(w) + 2 * pad, int(h) + 2 * pad
+    m = cv2.getRotationMatrix2D((cx, cy), a, 1.0)
+    m[:, 2] += (W / 2 - cx, H / 2 - cy)
+    blob = np.zeros(gray.shape, np.uint8)
+    cv2.drawContours(blob, [c], -1, 255, cv2.FILLED)
+    flat = cv2.warpAffine(blob, m, (W, H), flags=cv2.INTER_NEAREST) > 0
+    pic = cv2.warpAffine(gray, m, (W, H), flags=cv2.INTER_LINEAR)
+    across = w > h
+    if across:
+        flat, pic = flat.T, pic.T
+    rows = np.flatnonzero(flat.any(axis=1))
+    trim = int(0.25 * WORK_DPI)  # rounded corners
+    rows = rows[trim:len(rows) - trim]
+    if len(rows) < 2 * piece:
+        return [c]
+    sub = flat[rows]
+    left = sub.argmax(axis=1).astype(float)
+    right = (sub.shape[1] - 1 - sub[:, ::-1].argmax(axis=1)).astype(float)
+    ys = rows.astype(float)
+    gap = int(0.1 * WORK_DPI)  # rows next to the meeting point: rounded corners again
+    cuts = np.arange(int(piece) - trim, len(rows) - int(piece) + trim)
+    cuts = cuts[(cuts - gap > 2) & (cuts + gap < len(rows) - 2)]
+    if not len(cuts):
+        return [c]
+    n = len(rows)
+    errs = {}
+    for name, xs in (("left", left), ("right", right)):
+        err = _fit_errors(ys, xs)
+        errs[name] = (err(np.zeros_like(cuts), cuts - gap), err(cuts + gap, np.full_like(cuts, n)),
+                      err(np.array([0]), np.array([n]))[0])
+    total = sum(e[0] + e[1] for e in errs.values())
+    best = int(np.argmin(total))
+    k = cuts[best]
+    stepped = False
+    for name, (ea, eb, e1) in errs.items():
+        rms_a, rms_b = np.sqrt(ea[best] / (k - gap)), np.sqrt(eb[best] / (n - k - gap))
+        rms_1 = np.sqrt(e1 / n)
+        if max(rms_a, rms_b) > STRAIGHT_PX:  # a side that isn't straight: torn, curled, or not a print edge
+            return [c]
+        stepped |= rms_1 >= STRAIGHT_PX and rms_1 >= 3 * max(rms_a, rms_b, 0.4)
+    if not stepped:
+        return [c]
+    # Where exactly they meet: the strongest straight edge across the picture near there
+    seam = rows[k]
+    gy = np.abs(cv2.Sobel(pic.astype(np.float32), cv2.CV_32F, 0, 1, ksize=3))
+    near = np.r_[max(0, k - 3 * gap):k - gap, k + gap:min(n, k + 3 * gap)]  # not the corners where they meet
+    x0, x1 = int(left[near].max()) + 3, int(right[near].min()) - 3
+    if x1 - x0 < piece:
+        return [c]
+    xs = np.arange(x0, x1)
+    best_line, best_score = (seam, 0.0), -1
+    for t in np.tan(np.radians(np.arange(-3, 3.01, 0.25))):
+        for y in range(seam - 8, seam + 9):
+            yy = np.rint(y + t * (xs - (x0 + x1) / 2)).astype(int)
+            if yy.min() < 0 or yy.max() >= gy.shape[0]:
+                continue
+            score = gy[yy, xs].mean()
+            if score > best_score:
+                best_score, best_line = score, (y, t)
+    y, t = best_line
+    far = 2 * max(W, H)
+    ends = np.array([[-far, y - t * (far + (x0 + x1) / 2)], [far, y + t * (far - (x0 + x1) / 2)]], float)
+    if across:
+        ends = ends[:, ::-1]
+    back = cv2.invertAffineTransform(m)
+    ends = ends @ back[:, :2].T + back[:, 2]
+    cut = blob.copy()
+    cv2.line(cut, tuple(np.rint(ends[0]).astype(int)), tuple(np.rint(ends[1]).astype(int)), 0, 3)
+    pieces, _ = cv2.findContours(cut, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    pieces = sorted(pieces, key=cv2.contourArea, reverse=True)[:2]
+    if len(pieces) < 2 or min(min(cv2.minAreaRect(p)[1]) for p in pieces) < 0.8 * piece:
+        return [c]
+    return pieces
 
 
 def _refine(img, rect, dpi, lid):
@@ -335,15 +442,6 @@ def print_names(idx):
     return ("print " if len(nums) == 1 else "prints ") + (", ".join(nums[:-1]) + " and " + nums[-1] if len(nums) > 1 else nums[0])
 
 
-def top_direction(rect, turn_cw=0):
-    """Unit vector, in bed coordinates, pointing to the top of the saved photo cut from `rect`
-    (crop() straightens by the rect's angle; the photo is then turned `turn_cw` degrees clockwise)."""
-    a = np.radians(rect[2])
-    t = np.radians(turn_cw % 360)
-    vx, vy = -np.sin(t), -np.cos(t)  # up in the crop's frame after turning (y points down)
-    return np.cos(a) * vx - np.sin(a) * vy, np.sin(a) * vx + np.cos(a) * vy  # back through crop()'s rotation
-
-
 def hit(rects, x, y):
     """Index of the rect containing bed point (x, y), or None."""
     for i, r in enumerate(rects):
@@ -370,23 +468,42 @@ def _tag(view, text, centre, alert=False):
                 cv2.LINE_AA)
 
 
-def draw_overlay(img, rects, labels=None, max_side=1400, alert=(), ups=None):
+TURNED_BG = (43, 43, 43)  # behind a photo shown turned on its side (the app's preview colour)
+
+
+def _show_turned(glass, view, rect, turn_cw):
+    """Draw the print in `rect` (view pixels) on `view` as it will be saved: cut from `glass`, straightened
+    and turned `turn_cw` degrees clockwise, as big as fits in the space it takes on the glass."""
+    turn = turn_cw % 360
+    pic = crop(glass, rect, 100, inset_mm=0)
+    if not turn or turn % 90 or pic.size == 0:
+        return
+    pic = cv2.rotate(pic, {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180,
+                           270: cv2.ROTATE_90_COUNTERCLOCKWISE}[turn])
+    box = cv2.boxPoints(rect).astype(np.int32)
+    s = min(rect[1][0] / pic.shape[1], rect[1][1] / pic.shape[0], 1.0)
+    pic = cv2.resize(pic, (max(1, int(pic.shape[1] * s)), max(1, int(pic.shape[0] * s))), interpolation=cv2.INTER_AREA)
+    cv2.fillPoly(view, [box], TURNED_BG)
+    (cx, cy), ph, pw = rect[0], *pic.shape[:2]
+    x0, y0 = int(round(cx - pw / 2)), int(round(cy - ph / 2))
+    vx0, vy0 = max(x0, 0), max(y0, 0)
+    vx1, vy1 = min(x0 + pw, view.shape[1]), min(y0 + ph, view.shape[0])
+    if vx1 > vx0 and vy1 > vy0:
+        view[vy0:vy1, vx0:vx1] = pic[vy0 - y0:vy1 - y0, vx0 - x0:vx1 - x0]
+
+
+def draw_overlay(img, rects, labels=None, max_side=1400, alert=(), turns=None):
     """Small preview of the bed with numbered outlines, for the app window (alert: indices in red;
-    ups: per rect, the direction of the photo's top, drawn as an arrow)."""
+    turns: per rect, degrees clockwise the photo is turned; a turned photo is drawn the way it will look)."""
     f = max_side / max(img.shape[:2])
     view = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    if turns and any(t % 360 for t in turns):
+        glass = view.copy()  # cut every print from the untouched bed, even where boxes overlap
+        for ((cx, cy), (w, h), a), t in zip(rects, turns):
+            _show_turned(glass, view, ((cx * f, cy * f), (w * f, h * f), a), t)
     for i, r in enumerate(rects):
         (cx, cy), (w, h), a = r
         box = cv2.boxPoints(((cx * f, cy * f), (w * f, h * f), a)).astype(np.int32)
         cv2.polylines(view, [box], True, (40, 40, 230) if i in alert else (0, 160, 255), 3)
-        label_at = (cx * f, cy * f)
-        if ups:  # an arrow from the centre towards the photo's top
-            ux, uy = ups[i]
-            n = 0.32 * min(w, h) * f
-            start = (int(cx * f + ux * 12), int(cy * f + uy * 12))
-            end = (int(cx * f + ux * n), int(cy * f + uy * n))
-            cv2.arrowedLine(view, start, end, (0, 0, 0), 9, cv2.LINE_AA, tipLength=0.35)
-            cv2.arrowedLine(view, start, end, (90, 230, 90), 4, cv2.LINE_AA, tipLength=0.35)
-            label_at = (cx * f, cy * f + (-36 if uy > 0.5 else 36))  # below the arrow, or above one pointing down
-        _tag(view, labels[i] if labels else str(i + 1), (int(label_at[0]), int(label_at[1])), i in alert)
+        _tag(view, labels[i] if labels else str(i + 1), (int(cx * f), int(cy * f)), i in alert)
     return view

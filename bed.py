@@ -131,7 +131,7 @@ def save_fronts(cat, img, dpi, reference, s, batch, scan_backs, orient=no_answer
     dups = [i for i, p in enumerate(bed) if p["dup"]]
     view = detect.draw_overlay(img, rects, labels, alert=dups)
     shown = (rects, labels, dups, [p["id"] for p in bed])
-    tip = "Click a photo to turn it (the arrow shows its top). "
+    tip = "Click a photo to turn it the right way up. "
     took = f"{time.time() - started:.0f}s" + (f", {stamps} with a camera date" if stamps else "")
     if n_turned:
         took += f", {n_turned} turned upright"
