@@ -21,12 +21,14 @@ OLD_TAGS = ("Exif.Image.XPKeywords", "Exif.Image.XPComment", "Exif.Image.XPTitle
 ORIENTATION = {0: 1, 90: 6, 180: 3, 270: 8}  # degrees to turn clockwise for display -> EXIF Orientation
 
 
-def write(path, description, tags, keywords, date=None, replaces=None, turn=None):
+def write(path, description, tags, keywords, date=None, replaces=None, turn=None, seq=None):
     """date: 'YYYY', 'YYYY-MM' or 'YYYY-MM-DD' (missing parts become 1 January), or None for undated.
     replaces: the description we wrote last time. An empty description removes the one in the file
     only if it is still that one; a description typed in another app is left alone.
     turn: how far viewers should turn the photo clockwise (EXIF Orientation; the pixels stay as they are).
-    None leaves the orientation alone, e.g. as another app set it."""
+    None leaves the orientation alone, e.g. as another app set it.
+    seq: the photo's place in the order its batch was taken in: that many seconds past noon, so photo apps
+    (Immich's timeline) show prints of the same day in the order they were taken."""
     if path.suffix.lower() not in (".jpg", ".jpeg"):
         return  # TIFFs keep their info in the database only
     tags, leaves = ([*dict.fromkeys(t.strip() for t in ts if t and t.strip())] for ts in (tags, keywords))
@@ -39,7 +41,8 @@ def write(path, description, tags, keywords, date=None, replaces=None, turn=None
             exif["Exif.Image.ImageDescription"] = description if description and description.isascii() else None
         if date:
             y, m, d = (date.split("-") + ["01", "01"])[:3]
-            stamp = f"{y}:{int(m):02d}:{int(d):02d} 12:00:00"
+            s = min(int(seq or 0), 3599)
+            stamp = f"{y}:{int(m):02d}:{int(d):02d} 12:{s // 60:02d}:{s % 60:02d}"
         exif.update({k: stamp if date else None for k in EXIF_DATE})
         orientation = {} if turn is None else {"Xmp.tiff.Orientation": str(ORIENTATION.get(int(turn) % 360, 1))}
         if turn is not None:

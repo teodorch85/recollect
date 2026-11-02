@@ -105,3 +105,20 @@ def test_back_text():
 
 def test_print_size():
     assert organizer.print_size(3543, 2362, 600) == ("15.0x10.0", "10x15")
+
+
+def test_photos_named_and_timed_in_the_order_taken(cat):
+    organizer.template = organizer.naming.parse(organizer.naming.PRESETS[-1])  # {{seq}}_{{filename}}
+    add(cat, "00001", back_lab="0045 NNN 14", back_text="Κρήτη 1994")
+    add(cat, "00002", back_lab="0045 NNN 12")
+    add(cat, "00003", back_lab="0045 NNN 13")
+    organizer.organize(cat)
+    assert files(cat) == ["1994/Γάμος Βασίλη/001_1994_γάμος-βασίλη_00002.jpg",
+                          "1994/Γάμος Βασίλη/002_1994_γάμος-βασίλη_00003.jpg",
+                          "1994/Γάμος Βασίλη/003_1994_γάμος-βασίλη_00001.jpg"]
+    rows = {r["id"]: r for r in cat.rows()}
+    assert (rows["00002"]["roll"], rows["00002"]["frame"], rows["00002"]["seq"]) == ("45", "12", "1")
+    times = {pid: pyexiv2.ImageData((cat.root / r["path"]).read_bytes()).read_exif()["Exif.Photo.DateTimeOriginal"]
+             for pid, r in rows.items()}
+    assert times["00002"] < times["00003"] < times["00001"]  # Immich shows them in that order
+    assert organizer.organize(cat) == 0  # settled: nothing moves again

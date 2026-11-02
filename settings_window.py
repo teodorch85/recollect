@@ -171,8 +171,8 @@ class SettingsWindow:
         self.tpl_var = tk.StringVar(value=a.s["name_template"])
         self.tpl_note = tk.StringVar()
         self._row(card, "Folders and file names", "Like Immich's storage template: {{y}} {{MM}} {{MMMM}} {{dd}} "
-                  "{{album}} (the batch) {{id}} {{filename}} {{date}}, and {{#if y}}…{{else}}…{{/if}}. "
-                  "'/' makes a folder.", self._template_box, below=True)
+                  "{{album}} (the batch) {{id}} {{filename}} {{date}}, {{seq}} (the order taken in, from the roll and "
+                  "frame numbers the lab printed on the backs), and {{#if y}}…{{else}}…{{/if}}. '/' makes a folder.", self._template_box, below=True)
         tk.Label(card, textvariable=self.tpl_note, font=("Segoe UI", 10), background=CARD, foreground=ACCENT,
                  anchor="w", justify="left", wraplength=int(560 * self.ui), padx=14).pack(fill="x", pady=(0, 10))
         self.tpl_var.trace_add("write", lambda *e: self._preview_template())
