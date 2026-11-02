@@ -152,3 +152,32 @@ def test_a_rect_that_could_be_two_prints_but_is_no_print_size_is_odd():
     assert detect.odd_size(((0, 0), (300 * mm, 100 * mm), 0), DPI)        # 10x30: two 10x15 end to end
     assert not detect.odd_size(((0, 0), (110 * mm, 80 * mm), 0), DPI)     # 8x11 standard
     assert not detect.odd_size(((0, 0), (120 * mm, 75 * mm), 0), DPI)     # small and odd: no reason to doubt
+
+
+def grid_of_9x13(dpi):
+    """Four 9x13 prints in two rows, 1 cm apart, the last one a little tilted: an ordinary bed."""
+    cm = dpi / 2.54
+    img = fakes.lid(int(11.7 * dpi), int(8.5 * dpi))
+    for n, (x, y, a) in enumerate([(5.8, 7.5, 0), (15.8, 7.5, 0), (5.8, 21.5, 0), (15.8, 21.5, 0.8)]):
+        fakes.place(img, fakes.picture(int(13 * cm), int(9 * cm), seed=n), x * cm, y * cm, a)
+    return img, fakes.lid(*img.shape[:2], seed=9)
+
+
+@pytest.mark.parametrize("dpi", [150, 300])
+def test_an_ordinary_grid_of_small_prints_raises_no_doubt(dpi):
+    """The outline of a single print jogs by a pixel here and there: that hinted at two prints, and the finer
+    settings split one in two, so every such bed opened the Check prints window."""
+    img, empty = grid_of_9x13(dpi)
+    rects, unsure = detect.find_prints(img, dpi, empty)
+    assert len(rects) == 4 and unsure == []
+    assert len(detect.find_photos(img, dpi, empty, finer=True)) == 4  # "Find prints again" keeps them whole
+
+
+def test_grey_sky_along_a_side_is_not_trimmed_away():
+    """Lid-grey sky with a horizon 8 mm in looks like a strip of lid; away from the glass edge it stays."""
+    img = fakes.lid(H, W)
+    p = fakes.picture(590, 885, seed=5)
+    p[:47] = (222, 214, 208)
+    truth = fakes.place(img, p, 640, 700)
+    (found,) = detect.find_photos(img, DPI, EMPTY)
+    assert all(abs(s - t) <= 14 for s, t in zip(found[1], truth[1]))  # it lost 45 px of sky

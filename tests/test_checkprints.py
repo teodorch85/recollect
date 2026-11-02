@@ -23,6 +23,13 @@ def test_every_change_can_be_undone_in_turn():
     assert not boxes.undo()  # nothing left to take back
 
 
+def test_undo_goes_back_to_the_fronts_saved_before():
+    """Find prints again may see fewer prints than were saved (and split by hand): Undo shows the saved ones."""
+    boxes = Boxes([A], unsure=[0], before=[B, C])
+    assert boxes.rects == [A] and boxes.undo() and boxes.rects == [B, C] and boxes.unsure == []
+    assert not boxes.undo()
+
+
 def test_the_question_at_the_top():
     assert count_text(1) == "1 print found. Is that right?"
     assert count_text(5) == "5 prints found. Is that right?"

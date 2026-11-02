@@ -372,7 +372,7 @@ class App:
             self.skip_btn.config(state="normal")
             self.redo_btn.config(state="normal")
             self.again_btn.config(state="normal" if self.front_scan is not None else "disabled")
-            self.status.set(f"Saved {len(self.bed)} fronts. Flip each print over IN THE SAME SPOT, "
+            self.status.set(f"Saved {bed.plural(len(self.bed), 'front')}. Flip each print over IN THE SAME SPOT, "
                             "close the lid, press Space.  (N = no backs for this bed)")
         try:
             self.count_var.set(f"Photos: {self._catalog().count()}")
@@ -743,13 +743,13 @@ class App:
         self.root.destroy()
 
     def preview(self):
-        if self.busy or self.state != "front":
+        if self.busy or self.state != "front" or self._checking():
             return
         self._run(self._do_preview, "Preview scan…")
 
     def remove_bed_duplicates(self):
         """Throw away the fronts just scanned that repeat photos already in the library."""
-        if self.busy or self.state != "back":
+        if self.busy or self.state != "back" or self._checking():
             return
         dups = [p for p in self.bed if p.get("dup")]
         for p in dups:
@@ -767,7 +767,7 @@ class App:
             self._run(self._do_find_duplicates, "Looking for duplicates…")
 
     def skip_backs(self):
-        if self.busy or self.state != "back":
+        if self.busy or self.state != "back" or self._checking():
             return
         for p in self.bed:
             self._catalog().upsert(p["id"], back_status="not scanned")
@@ -778,18 +778,29 @@ class App:
 
     def find_again(self):
         """Look for the prints in the same scan again with finer settings (prints large, gaps very small)."""
-        if self.busy or self.state != "back" or self.front_scan is None:
+        if self.busy or self.state != "back" or self.front_scan is None or self._checking():
             return
         self._run(self._do_find_again, "Looking for the prints again, more carefully…")
 
     def _checking(self):
+        """The Check prints window is open: the prints on the glass wait for it (Save or Cancel)."""
         return bool(getattr(self, "_check_win", None) and self._check_win.win.winfo_exists())
 
     def _check_prints(self, rects, unsure, started, finer=False, replacing=False):
-        """Open the Check prints window on the scan; Save runs the job that saves what was confirmed."""
+        """Open the Check prints window on the scan; Save runs the job that saves what was confirmed.
+        replacing: the fronts saved now are replaced by the confirmed ones (Find prints again); Undo goes
+        back to them, and saving them unchanged keeps them."""
         img, dpi = self.front_scan
+        saved = [p["rect"] for p in self.bed] if replacing else None
+        note = None
+        if replacing and len(rects) <= len(saved):
+            note = (f"Looking again found {bed.plural(len(rects), 'print')} (saved now: {len(saved)}). "
+                    "Ctrl+Z shows the saved ones.")
 
         def save(confirmed):
+            if replacing and confirmed == saved:
+                cancel()
+                return
             self._checked = (confirmed, started, replacing)
             self._run(self._do_save_checked, f"Saving {len(confirmed)} photo{'s' if len(confirmed) != 1 else ''}…")
 
@@ -802,12 +813,12 @@ class App:
             self.status.set("Nothing saved; press Space to scan again.")
 
         self._check_win = checkprints.CheckPrints(
-            self, img, dpi, rects, unsure, save, cancel, finer_already=finer,
+            self, img, dpi, rects, unsure, save, cancel, finer_already=finer, before=saved, note=note,
             find_again=lambda im, d: detect.find_prints(im, d, self.reference, finer=True))
 
     def redo_fronts(self):
         """Delete the fronts just saved (e.g. two prints merged) so the bed can be rescanned."""
-        if self.busy or self.state != "back":
+        if self.busy or self.state != "back" or self._checking():
             return
         bed.drop(self._catalog(), self.bed)
         self.state, self.bed, self.front_scan = "front", [], None
@@ -987,6 +998,7 @@ class App:
     def _do_backs(self):
         dpi = int(self.s["back_dpi"])
         region = bed.back_region(self.bed, dpi)
+        self.front_scan = None  # the prints are flipped now: no use finding them again; frees the full scan
         self.job.phase(0, 0.4, bed.scan_seconds(dpi, share=min(1.0, region[3] / 11.7)))
         img = scan_bed(dpi, region=region, background=self.reference)
         self.job.progress(0.4)

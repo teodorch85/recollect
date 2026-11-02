@@ -93,6 +93,22 @@ def test_a_dragged_line_on_a_rect_gives_the_two_prints_on_the_bed(tilt):
     assert split.rect_in_two(img, merged, dpi, tuple(p), tuple(p)) is None
 
 
+def test_a_drag_along_the_edge_or_across_a_corner_is_no_cut():
+    """A line just inside the box's edge gave a piece of negative height, and one across a corner a sliver:
+    saving those failed (or filed a scrap of lid as a photo)."""
+    dpi, h, w = 150, 1755, 1275
+    img = fakes.lid(h, w)
+    fakes.place(img, fakes.picture(590, 885, seed=1), 640, 500)
+    fakes.place(img, fakes.picture(760, 885, seed=2), 640, 500 + 295 + 380)
+    (merged,) = detect.find_photos(img, dpi, fakes.lid(h, w, seed=9))
+    (cx, cy), (bw, bh), _ = merged
+    top, left = cy - bh / 2, cx - bw / 2
+    assert split.rect_in_two(img, merged, dpi, (100, top + 3), (1200, top + 3)) is None
+    assert split.rect_in_two(img, merged, dpi, (100, top + 40), (1200, top + 40)) is None
+    assert split.rect_in_two(img, merged, dpi, (left - 20, top + 60), (left + 60, top - 20)) is None
+    assert len(split.rect_in_two(img, merged, dpi, (100, 795), (1200, 795))) == 2
+
+
 def test_crop_coordinates_round_trip():
     rect = ((500.0, 700.0), (400.0, 300.0), 7.0)
     x, y = split.to_crop(rect, rect[0])

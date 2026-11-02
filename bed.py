@@ -69,6 +69,11 @@ def _duplicate_check(cat, photo, known):
     return prints, (row[0].get("duplicate_of") or match[0]) if row else match[0]
 
 
+def plural(n, word):
+    """'1 photo', '3 photos'."""
+    return f"{n} {word}{'s' if n != 1 else ''}"
+
+
 def no_answers(photos):
     return [None] * len(photos), None
 
@@ -166,14 +171,14 @@ def save_fronts(cat, img, dpi, reference, s, batch, scan_backs, orient=no_answer
                 + ("press “Remove duplicates” to drop them. " if scan_backs else
                    "kept and tagged Duplicate; review them with Find duplicates. "))
     if scan_backs:
-        return Fronts(view, (f"Saved {len(rects)} fronts ({took}). {warn}Check the outlines: one box per print? "
-                             f"{tip}Then flip each print IN THE SAME SPOT and press Space.  (N = skip backs, "
-                             "Redo fronts = boxes wrong)"), bed, shown)
+        return Fronts(view, (f"Saved {plural(len(rects), 'front')} ({took}). {warn}Check the outlines: "
+                             f"one box per print? {tip}Then flip each print IN THE SAME SPOT and press Space.  "
+                             "(N = skip backs, Redo fronts = boxes wrong)"), bed, shown)
     for p in bed:
         cat.upsert(p["id"], back_status="not scanned")
     summary = library.file_photos(cat, [p["id"] for p in bed])
-    return Fronts(view, (f"Saved {len(rects)} photos ({took}). {warn}{summary}. {tip}Place the next prints and "
-                         "press Space."), [], shown)
+    return Fronts(view, (f"Saved {plural(len(rects), 'photo')} ({took}). {warn}{summary}. {tip}Place the next "
+                         "prints and press Space."), [], shown)
 
 
 def back_region(bed, dpi):

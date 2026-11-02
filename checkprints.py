@@ -23,9 +23,10 @@ CUT = "#E81123"                                   # the line being dragged
 class Boxes:
     """The prints as the user edits them: each rect with whether the program was unsure about it, and undo."""
 
-    def __init__(self, rects, unsure=()):
+    def __init__(self, rects, unsure=(), before=None):
+        """before: the boxes as they were (the fronts saved now), for Undo to go back to."""
         self.items = [(r, i in set(unsure)) for i, r in enumerate(rects)]
-        self._history = []
+        self._history = [[(r, False) for r in before]] if before is not None else []
 
     @property
     def rects(self):
@@ -68,10 +69,11 @@ class CheckPrints:
     """on_save(rects) is called with the confirmed prints, on_cancel() when the user gives up.
     find_again(img, dpi) -> (rects, unsure) looks again with the finer settings (it runs in a thread)."""
 
-    def __init__(self, app, img, dpi, rects, unsure, on_save, on_cancel, find_again=None, finer_already=False):
+    def __init__(self, app, img, dpi, rects, unsure, on_save, on_cancel, find_again=None, finer_already=False,
+                 before=None, note=None):
         self.app, self.img, self.dpi = app, img, dpi
         self.on_save, self.on_cancel, self.find_again = on_save, on_cancel, find_again
-        self.boxes = Boxes(rects, unsure)
+        self.boxes = Boxes(rects, unsure, before)
         f = min(1.0, SHOWN_PX / max(img.shape[:2]))
         self.small = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
         self.selected = None
@@ -88,16 +90,26 @@ class CheckPrints:
         self.win.geometry(f"{w}x{h}+{(sw - w) // 2}+{max(0, (sh - h) // 2 - 20)}")
         self.win.minsize(int(700 * ui), int(500 * ui))
         self._build(finer_already)
+        if note:
+            self.note.set(note)
         self.win.protocol("WM_DELETE_WINDOW", self._cancel)
         for keys, fn in (("<Return>", self._save), ("<Escape>", self._cancel), ("<Delete>", self._remove),
-                         ("<BackSpace>", self._remove), ("<Control-z>", self._undo)):
+                         ("<BackSpace>", self._remove), ("<Control-z>", self._undo), ("<Control-Z>", self._undo)):
             self.win.bind(keys, lambda e, fn=fn: fn())
         self.win.focus_set()
         self._refresh()
+        self._grab()
+
+    def _grab(self, tries=20):
+        """The main window waits until this one is dealt with. A window not yet on screen can't take the grab
+        (X11): try again shortly; the main window also refuses to act while this one is open (App._checking)."""
+        if not self.win.winfo_exists():
+            return
         try:
-            self.win.grab_set()  # the main window waits until this one is dealt with
-        except tk.TclError:  # not on screen yet (some window managers): it only costs the "modal" part
-            pass
+            self.win.grab_set()
+        except tk.TclError:
+            if tries:
+                self.win.after(100, self._grab, tries - 1)
 
     # ---------- layout ----------
     def _build(self, finer_already):
@@ -114,7 +126,9 @@ class CheckPrints:
         bar.pack(side="bottom", fill="x")
         self.note = tk.StringVar(value="Drag a line across a box to split it in two.  Click a box, then press "
                                        "Delete if it is no print.  Ctrl+Z undoes.")
-        ttk.Label(self.win, textvariable=self.note, style="Muted.TLabel", padding=(14, 4)).pack(side="bottom", anchor="w")
+        # plain 11 pt in the muted colour: Muted.TLabel's 10 pt is too small for the hints and errors shown here
+        note = ttk.Label(self.win, textvariable=self.note, foreground=theme.MUTED, padding=(14, 4))
+        note.pack(side="bottom", anchor="w")
         self.remove_btn = ttk.Button(bar, text="Not a print  [Delete]", command=self._remove)
         self.remove_btn.pack(side="left")
         self.undo_btn = ttk.Button(bar, text="Undo  [Ctrl+Z]", command=self._undo)
@@ -167,7 +181,8 @@ class CheckPrints:
             colour = PICKED if i == self.selected else UNSURE if i in doubts else GOOD
             self.canvas.create_polygon(*pts, outline=colour, fill="", width=6 if i == self.selected else 4, tags="box")
             x, y = self._to_canvas(*r[0])
-            text = self.canvas.create_text(x, y, text=str(i + 1), fill="white", font=(theme.FONT, 20, "bold"), tags="box")
+            text = self.canvas.create_text(x, y, text=str(i + 1), fill="white", font=(theme.FONT, 20, "bold"),
+                                           tags="box")
             x0, y0, x1, y1 = self.canvas.bbox(text)
             tag = self.canvas.create_rectangle(x0 - 10, y0 - 4, x1 + 10, y1 + 4, fill=colour, outline="", tags="box")
             self.canvas.tag_lower(tag, text)
@@ -177,7 +192,9 @@ class CheckPrints:
         n = len(self.boxes.rects)
         doubts = self.boxes.unsure
         self.count.set(count_text(n))
-        if doubts:
+        if not n:
+            self.sub.set("Undo (Ctrl+Z) brings the boxes back; Cancel saves nothing.")
+        elif doubts:
             names = detect.print_names(doubts)
             self.sub.set(f"Orange: I am not sure about {names}. Is it one print or two? "
                          "Split or remove boxes until there is one per print.")
@@ -237,8 +254,10 @@ class CheckPrints:
         thread.start()
 
         def poll():
+            if not self.win.winfo_exists():  # closed meanwhile: the result is not wanted
+                return
             if thread.is_alive():
-                self.win.after(80, poll)
+                self.app.root.after(80, poll)
                 return
             self.working = False
             self.win.config(cursor="")
@@ -248,7 +267,7 @@ class CheckPrints:
                 self._refresh()
             else:
                 done(out["result"])
-        self.win.after(80, poll)
+        self.app.root.after(80, poll)
 
     def _split(self, i, p, q):
         rect = self.boxes.rects[i]
@@ -257,7 +276,8 @@ class CheckPrints:
 
     def _split_done(self, i, two):
         if not two or len(two) != 2:
-            self.note.set("That is not a line across the box. Drag from one side of it to the other.")
+            self.note.set("That cut would leave a piece too small for a print. Drag across the box where the "
+                          "two prints meet, from one side of it to the other.")
         else:
             self.boxes.split(i, two)
             self.selected = None

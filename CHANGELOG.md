@@ -3,6 +3,20 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.18.0 — 2026-11-02
+- **Check prints:** when ReCollect isn't sure how many prints lie on the glass (e.g. two large prints
+  with almost no gap), it saves nothing yet and shows you the boxes. Drag a line across a box to split
+  it, click a box and press Delete if it isn't a print, Ctrl+Z to undo, Enter to save.
+- **Find prints again:** a new button after the fronts are saved looks again in the same scan, with
+  finer settings for narrow gaps, and lets you check the boxes before the fronts are saved again. No
+  rescan needed. Ctrl+Z brings back the boxes saved before.
+- A strip of empty glass between a print and the edge of the glass is no longer kept in its photo.
+- **Order taken:** the roll and frame numbers labs print on the backs (e.g. "0045 NNN 12", "<12>",
+  "IMG_0456.JPG") put each batch in the order it was taken. New naming variables {{seq}}, {{roll}},
+  {{frame}} and a preset "…/{{album}}/{{seq}}_{{filename}}". Dated photos get their time set in that
+  order, so Immich shows a day's prints in the order they were taken. Roll, frame and order are in the
+  catalogue. The info inside every photo is rewritten once after updating.
+
 ## 1.17.0 — 2026-11-02
 - Prints lying edge to edge, with no gap between them, are now found as two photos. ReCollect spots
   where the outline steps or bends where one print meets the other (prints are never exactly the same
