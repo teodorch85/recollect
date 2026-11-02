@@ -3,6 +3,13 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.17.0 — 2026-11-02
+- Prints lying edge to edge, with no gap between them, are now found as two photos. ReCollect spots
+  where the outline steps or bends where one print meets the other (prints are never exactly the same
+  size and in line). A single photo is never cut: if in doubt it stays whole, and Review ▸ Split is there.
+- Clicking a photo in the preview turns the picture itself on screen, at once, instead of moving an
+  arrow. The file is written right after. Turning in Review shows at once too.
+
 ## 1.16.1 — 2026-10-30
 - Larger text on buttons, lists and labels, and it now grows with Windows' display scaling
   (125%, 150%) like the rest of the window. Settings' small print is larger too.

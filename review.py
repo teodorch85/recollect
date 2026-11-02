@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
+import library
 import organizer
 import rotate
 import split
@@ -267,13 +268,17 @@ class Review:
     def turn(self, delta):
         if not self._ready():
             return
-        self.note.set(self.app.turn_photo(self.rows[self.i]["id"], delta))
+        cat, pid = self.app._catalog(), self.rows[self.i]["id"]
+        self.note.set(library.turn_photo(cat, pid, delta, write=False))
         self.rows[self.i] = self._fresh(self.rows[self.i])
         self._show_big()
         if self._front is not None:
             img = rotate.turn(cv2.resize(self._front, None, fx=0.25, fy=0.25, interpolation=cv2.INTER_AREA),
                               _turn(self.rows[self.i]))
             self._set_thumb(self.i, _fit(img, self.thumb, self.thumb))
+        self.app._refresh_clickable()
+        self.win.update_idletasks()  # show the turn first: writing it into the file takes a moment
+        library.write_turn(cat, pid)
 
     def split(self):
         if not self._ready():

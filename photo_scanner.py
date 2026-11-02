@@ -391,19 +391,16 @@ class App:
         return [rows.get(pid) for pid in c["pids"]]
 
     def _draw_clickable(self):
-        """Redraw the fronts with an arrow to each photo's top, from what the catalogue says now."""
+        """Redraw the fronts, each turned the way the catalogue says it is now."""
         c = self._clickable
         rows = self._clickable_rows()
         if rows is None:
             self._clickable = None
             return
-        ups, labels = [], []
-        for r, rect, label in zip(rows, c["rects"], c["labels"]):
-            turn = int((r or {}).get("turn") or 0)
-            ups.append(detect.top_direction(rect, int((r or {}).get("rotated") or 0) + turn))
-            labels.append(label + (f" +{turn}" if turn else ""))
-        self._view = Image.fromarray(cv2.cvtColor(detect.draw_overlay(c["img"], c["rects"], labels, alert=c["alert"],
-                                                                      ups=ups, max_side=PREVIEW_SIDE),
+        turns = [int((r or {}).get("rotated") or 0) + int((r or {}).get("turn") or 0) for r in rows]
+        self._view = Image.fromarray(cv2.cvtColor(detect.draw_overlay(c["img"], c["rects"], c["labels"],
+                                                                      alert=c["alert"], turns=turns,
+                                                                      max_side=PREVIEW_SIDE),
                                                   cv2.COLOR_BGR2RGB))
         self._render()
 
@@ -425,12 +422,16 @@ class App:
         message = self.turn_photo(c["pids"][i], delta)
         then = " Then flip the prints and press Space." if self.state == "back" else ""
         self.status.set(message.replace("Only the orientation tag changes.",
-                                        "Click again to keep turning, right-click to turn back (the arrow shows "
-                                        "its top). Only the orientation tag changes." + then))
+                                        "Click again to keep turning, right-click to turn back. "
+                                        "Only the orientation tag changes." + then))
 
     def turn_photo(self, pid, delta):
-        message = library.turn_photo(self._catalog(), pid, delta)
+        """Show the turn at once, then write it into the file."""
+        cat = self._catalog()
+        message = library.turn_photo(cat, pid, delta, write=False)
         self._refresh_clickable()
+        self.root.update_idletasks()  # the turned picture is on screen before the file is written
+        library.write_turn(cat, pid)
         return message
 
     def _render(self):
