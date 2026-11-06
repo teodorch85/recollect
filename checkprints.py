@@ -12,6 +12,7 @@ import cv2
 from PIL import Image, ImageTk
 
 import detect
+import library
 import split
 import theme
 
@@ -62,7 +63,7 @@ def count_text(n):
     """The big question at the top."""
     if n == 0:
         return "No prints left: nothing to save"
-    return f"{n} print{'s' if n > 1 else ''} found. Is that right?"
+    return f"{library.plural(n, 'print')} found. Is that right?"
 
 
 class CheckPrints:
@@ -200,7 +201,7 @@ class CheckPrints:
                          "Split or remove boxes until there is one per print.")
         else:
             self.sub.set("One box per print? Then save. If not, fix it here before anything is saved.")
-        self.save_btn.config(text=f"Save {n} photo{'s' if n != 1 else ''}  [Enter]" if n else "Nothing to save",
+        self.save_btn.config(text=f"Save {library.plural(n, 'photo')}  [Enter]" if n else "Nothing to save",
                              state="normal" if n and not self.working else "disabled")
         idle = "disabled" if self.working else "normal"
         self.remove_btn.config(state="normal" if self.selected is not None and not self.working else "disabled")
@@ -309,7 +310,7 @@ class CheckPrints:
         rects, unsure = found
         self.boxes.replace_all(rects, unsure)
         self.selected = None
-        self.note.set(f"Looked again: {len(rects)} print{'s' if len(rects) != 1 else ''} (before: {before}). "
+        self.note.set(f"Looked again: {library.plural(len(rects), 'print')} (before: {before}). "
                       "Not better? Ctrl+Z.")
         self._refresh()
 

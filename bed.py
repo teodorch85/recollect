@@ -69,11 +69,6 @@ def _duplicate_check(cat, photo, known):
     return prints, (row[0].get("duplicate_of") or match[0]) if row else match[0]
 
 
-def plural(n, word):
-    """'1 photo', '3 photos'."""
-    return f"{n} {word}{'s' if n != 1 else ''}"
-
-
 def no_answers(photos):
     return [None] * len(photos), None
 
@@ -102,11 +97,12 @@ def find_fronts(img, dpi, reference, check=True):
 
 
 def save_fronts(cat, img, dpi, reference, s, batch, scan_backs, orient=no_answers, job=library.Job(),
-                started=None, rects=None):
+                started=None, rects=None, replaces=()):
     """Cut the prints out of a bed scan, save and catalogue them. With scan_backs they wait for their
     backs (Fronts.bed); otherwise they are filed at once. orient(photos) -> (answers, problem): which
     way is up (rotate.orient_all), or no_answers. rects: where the prints are, when already found
-    (and confirmed by the user); otherwise they are looked for here."""
+    (and confirmed by the user); otherwise they are looked for here. replaces: ids of fronts these will
+    replace (they are not duplicates of them, though they are the same prints)."""
     started = started or time.time()
     if rects is None:
         found = find_fronts(img, dpi, reference, check=False)
@@ -118,7 +114,8 @@ def save_fronts(cat, img, dpi, reference, s, batch, scan_backs, orient=no_answer
     out, first = library.inbox(cat), library.next_id(cat)
     scanned = datetime.now().isoformat(timespec="seconds")
     bed, stamps = [], 0
-    known = [(r["id"], r["fingerprint"]) for r in cat.rows("fingerprint IS NOT NULL AND fingerprint != ''")]
+    known = [(r["id"], r["fingerprint"]) for r in cat.rows("fingerprint IS NOT NULL AND fingerprint != ''")
+             if r["id"] not in replaces]
     photos = []
     for i, r in enumerate(rects):
         job.stop_point()  # nothing saved yet
@@ -171,13 +168,13 @@ def save_fronts(cat, img, dpi, reference, s, batch, scan_backs, orient=no_answer
                 + ("press “Remove duplicates” to drop them. " if scan_backs else
                    "kept and tagged Duplicate; review them with Find duplicates. "))
     if scan_backs:
-        return Fronts(view, (f"Saved {plural(len(rects), 'front')} ({took}). {warn}Check the outlines: "
+        return Fronts(view, (f"Saved {library.plural(len(rects), 'front')} ({took}). {warn}Check the outlines: "
                              f"one box per print? {tip}Then flip each print IN THE SAME SPOT and press Space.  "
                              "(N = skip backs, Redo fronts = boxes wrong)"), bed, shown)
     for p in bed:
         cat.upsert(p["id"], back_status="not scanned")
     summary = library.file_photos(cat, [p["id"] for p in bed])
-    return Fronts(view, (f"Saved {plural(len(rects), 'photo')} ({took}). {warn}{summary}. {tip}Place the next "
+    return Fronts(view, (f"Saved {library.plural(len(rects), 'photo')} ({took}). {warn}{summary}. {tip}Place the next "
                          "prints and press Space."), [], shown)
 
 
@@ -245,7 +242,7 @@ def check_placement(img, reference, dpi=PREVIEW_DPI):
     found = "Preview only, nothing saved. "
     if not rects:
         return detect.draw_overlay(img, []), found + "No prints found on the glass."
-    found += f"Found {len(rects)} print{'s' if len(rects) > 1 else ''}."
+    found += f"Found {library.plural(len(rects), 'print')}."
     problems, bad = detect.check_placement(rects, img.shape, dpi)
     if backs:
         problems.insert(0, f"{detect.print_names(sorted(backs))} {'is' if len(backs) == 1 else 'are'} "

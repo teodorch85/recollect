@@ -3,6 +3,16 @@
 Versions are MAJOR.MINOR.PATCH: MAJOR for changes that need your photo library migrated, MINOR for
 new features, PATCH for fixes. The running version shows in the window title.
 
+## 1.18.1 — 2026-11-06
+- A print pushed against the edge of the glass no longer loses a strip of plain sky along that edge: a
+  strip is taken for empty lid only if it has the lid's own colour in the calibration scan.
+- Find prints again: the fronts saved before are removed only once the new ones are saved, so Cancel
+  or a failure keeps them. A photo you turned keeps its turn, and duplicates you removed stay removed.
+  (The new fronts get new numbers.)
+- Order taken: handwriting like “Νίκος (2)” is no longer read as frame 2, and camera file names such as
+  P1010023.JPG and 100-0123.JPG are recognised.
+- Finding the prints is back to the speed of 1.17, and the second look costs less.
+
 ## 1.18.0 — 2026-11-02
 - **Check prints:** when ReCollect isn't sure how many prints lie on the glass (e.g. two large prints
   with almost no gap), it saves nothing yet and shows you the boxes. Drag a line across a box to split

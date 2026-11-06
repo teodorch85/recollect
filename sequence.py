@@ -4,14 +4,15 @@ A minilab prints a machine line on each back: the order (roll) number and the fr
 film, plus exposure codes, e.g.
     0123 NNN 12        12 N N +1 0045        <12> 0045        N12 +1 -1 0045
 or, for prints of digital photos, the camera's file name:
-    IMG_0456.JPG       DSC01234.JPG          P1010023.JPG
+    IMG_0456.JPG       DSC01234.JPG          P1010023.JPG          100-0123.JPG
 Frame 12 of roll 0045 was taken after frame 11 of the same roll, so within a batch the photos are
 put in order roll by roll, frame by frame. Photos whose back says nothing stay next to the photo
 scanned just before them (prints are usually scanned in the order they came out of the envelope).
 """
 import re
 
-DIGITAL = re.compile(r"\b([A-Z]{1,5}[_-]?)(\d{3,5})\.JPE?G\b", re.IGNORECASE)
+# camera file names: letters (IMG_, DSC, P) or a folder number (100-) and a counter that grows shot by shot
+DIGITAL = re.compile(r"(?<![\w-])([A-Z]{1,5}[_-]?|\d{3}[_-])(\d{3,7})\.JPE?G\b", re.IGNORECASE)
 BRACKETED = re.compile(r"[<‹«(\[]\s*(\d{1,2})\s*[>›»)\]]")      # <12>
 N_FRAME = re.compile(r"\bN\s?(\d{1,2})A?\b")                     # N12 (Fuji Frontier)
 CODE = re.compile(r"^(N+|[+-]\d|0|[A-Z]?[+-]\d)$")               # exposure correction codes
@@ -19,18 +20,20 @@ NUMBER = re.compile(r"^(\d{1,6})A?$")
 MAX_FRAME = 40  # a 36-exposure roll gives up to 38-39 frames
 
 
-def parse_lab(text):
-    """(roll, frame) from a back's lab lines: roll a string ('' if none), frame an int or None."""
+def parse_lab(text, strict=False):
+    """(roll, frame) from a back's lab lines: roll a string ('' if none), frame an int or None.
+    strict: the text may be handwriting too ("Νίκος (2)"): a bracketed or N-numbered frame counts only on
+    a line that also has a roll number, as a lab machine prints it."""
     text = text or ""
     m = DIGITAL.search(text)
     if m:  # a camera file name: the counter orders the shots; the prefix tells cameras apart
-        return m.group(1).upper().rstrip("_-"), int(m.group(2))
+        return m.group(1).upper().rstrip("_-"), int(m.group(2))  # P1010023: folder 101, shot 23
     for line in text.splitlines():
         tokens = re.findall(r"[<‹«(\[]?\s*[\w+-]+\s*[>›»)\]]?", line)
         tokens = [t.strip() for t in tokens if t.strip()]
         rolls = [t for t in tokens if re.fullmatch(r"\d{4,6}", t)]
         roll = rolls[-1] if rolls else ""
-        frame = _frame(line, tokens, roll)
+        frame = _frame(line, tokens, roll, marked=not strict or bool(roll))
         if frame is not None:
             return roll.lstrip("0") or roll, frame
     return "", None
@@ -40,11 +43,12 @@ def frame_of(row):
     """(roll, frame) of a catalogue row: from its lab lines, else from the rest of its back (lab lines
     that were read before ReCollect knew their pattern are there)."""
     found = parse_lab(row.get("back_lab"))
-    return found if found[1] is not None else parse_lab(row.get("back_text"))
+    return found if found[1] is not None else parse_lab(row.get("back_text"), strict=True)
 
 
-def _frame(line, tokens, roll):
-    m = BRACKETED.search(line) or N_FRAME.search(line)
+def _frame(line, tokens, roll, marked=True):
+    """The frame number on a lab line. marked=False: "<12>" or "N12" alone is not enough (see parse_lab)."""
+    m = (BRACKETED.search(line) or N_FRAME.search(line)) if marked else None
     if m and 0 < int(m.group(1)) <= MAX_FRAME:
         return int(m.group(1))
     # a small number standing next to exposure codes: "12 N N +1" or "NNN 12" or "NNN 012"

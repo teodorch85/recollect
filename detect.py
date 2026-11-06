@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 import cv2
 import numpy as np
 
-import organizer
+import sizes
 
 WORK_DPI = 100          # detection runs on a downscaled copy at this resolution
 GAP_DPI = 200           # finer copy used to find narrow gaps between prints that nearly touch
@@ -65,37 +65,51 @@ def find_prints(img, dpi, reference=None, finer=False):
     that hinted at two prints without proof, or a print that the finer settings see differently.
     Only a normal run looks for hints and cross-checks with the finer settings (a finer run is itself
     the second opinion, and hints are everywhere with its settings)."""
-    rects, doubts = _detect(img, dpi, reference, True, FINER if finer else NORMAL)
+    blobs = _blobs(img, dpi, reference)  # the same for both looks: only the splitting differs
+    rects, doubts = _detect(img, dpi, reference, True, FINER if finer else NORMAL, blobs)
     unsure = {i for i, d in enumerate(doubts) if (d and not finer) or odd_size(rects[i], dpi)}  # finer hints everywhere
     if not finer and rects:
-        again = _detect(img, dpi, reference, False, FINER)[0]
-        unsure |= {i for i, r in enumerate(rects) if not any(_same_print(r, o, dpi) for o in again)}
+        again = _detect(img, dpi, reference, False, FINER, blobs, trim=False)[0]
+        unsure |= {i for i, r in enumerate(rects) if not any(same_print(r, o, dpi) for o in again)}
     return rects, sorted(unsure)
 
 
 def odd_size(rect, dpi):
     """True for a rect that could hold two prints (long and thin, or a big area) yet is no standard
-    print size: probably two prints taken for one (or a odd print: the user decides)."""
+    print size: probably two prints taken for one (or an odd print: the user decides)."""
     (w, h) = rect[1]
     a, b = sorted((w / dpi * 2.54, h / dpi * 2.54))
-    if organizer.print_size(w, h, dpi)[1]:
+    if sizes.print_size(w, h, dpi)[1]:
         return False
     return b >= 1.8 * a or a * b >= ODD_AREA_CM2
 
 
-def _same_print(r, o, dpi):
+def same_print(r, o, dpi):
     """Two rects that outline the same print: centres within 0.3 in, sides within 10%."""
     close = np.hypot(r[0][0] - o[0][0], r[0][1] - o[0][1]) < 0.3 * dpi
     return close and all(abs(x - y) < 0.1 * max(x, y) for x, y in zip(sorted(r[1]), sorted(o[1])))
 
 
-def _detect(img, dpi, reference, refine, sens):
-    """(rects in reading order, a doubt flag for each: the blob hinted at two prints without proof)."""
+
+@dataclass
+class _Blobs:
+    """What every look at a bed shares, whatever the sensitivity: the blobs of things on the glass."""
+    gray: np.ndarray       # the work copy (WORK_DPI), grey and blurred
+    lid: float             # brightness of the empty lid
+    contours: list         # the filled blobs, before any splitting
+    gap_gray: np.ndarray   # the finer copy (GAP_DPI) the gap lines are looked for in
+    tophat: np.ndarray     # ... and how much brighter than its surroundings each of its pixels is
+    tint: tuple            # ... and its colour beside the empty bed's, for _tint_off (None without one)
+    empty: np.ndarray      # the empty-bed scan at the work size (or None): lid colour needs no detail
+
+
+def _blobs(img, dpi, reference):
     work = _to_work(img, dpi)
     g = _gray_blur(work)
     if reference is not None:
         ref = cv2.resize(reference, (work.shape[1], work.shape[0]), interpolation=cv2.INTER_AREA)
         diff = cv2.absdiff(g, _gray_blur(ref))
+        reference = ref
         lid = float(np.median(cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY)))
     else:
         lid = float(np.percentile(g, 95))
@@ -111,13 +125,22 @@ def _detect(img, dpi, reference, refine, sens):
     cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
     filled = cv2.morphologyEx(filled, cv2.MORPH_OPEN, np.ones((15, 15), np.uint8))
     contours, _ = cv2.findContours(filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours = _split_touching(contours, filled.shape, _gap_lines(img, dpi, sens), sens)
+    gap_gray, tophat, tint = _thin_bright(img, dpi, reference)
+    return _Blobs(g, lid, list(contours), gap_gray, tophat, tint, reference)
+
+
+def _detect(img, dpi, reference, refine, sens, blobs=None, trim=True):
+    """(rects in reading order, a doubt flag for each: the blob hinted at two prints without proof).
+    trim=False skips _trim_lid: for a rough second look that only counts the prints."""
+    b = blobs or _blobs(img, dpi, reference)
+    shape = b.gray.shape
+    contours = _split_touching(b.contours, shape, _gap_lines(b.gap_gray, b.tophat, sens, b.tint), sens)
     rects, doubts = [], []
     for c in contours:
-        pieces, maybe = _stacked(c, g, sens)
+        pieces, maybe = _stacked(c, b.gray, sens)
         for rect in _rects(pieces, dpi):
-            rect = _trim_lid(img, rect, dpi, lid)
-            rects.append(_refine(img, rect, dpi, lid) if refine else rect)
+            rect = _trim_lid(img, rect, dpi, b.lid, b.empty) if trim else rect
+            rects.append(_refine(img, rect, dpi, b.lid, b.empty) if refine else rect)
             doubts.append(maybe)
     order = reading_order(rects, dpi)
     return order, [doubts[next(i for i, r in enumerate(rects) if r is o)] for o in order]
@@ -154,19 +177,43 @@ def reading_order(rects, dpi):
     return [r for row in rows for r in sorted(row, key=lambda r: r[0][0])]
 
 
-def _gap_lines(img, dpi, sens=NORMAL):
-    """Long, thin, straight bright lines: the strip of lid showing between prints a few mm apart.
-
-    Returns segments in WORK_DPI coordinates. Only near-horizontal/vertical lines count,
-    since gaps follow the edges of roughly straight-placed prints.
-    """
+def _thin_bright(img, dpi, reference=None):
+    """(grey copy at GAP_DPI, its top-hat, tint): thin bright lines stand out in the top-hat. tint (with the
+    empty-bed scan, else None): per pixel, how far its colour is off the lid's at that spot, brightness
+    aside; a gap line must have the lid's tint, or plain pale sky along the glass edge passes for one."""
     f = GAP_DPI / dpi
-    g = cv2.cvtColor(cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+    small = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    g = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
     k = int(10 / 25.4 * GAP_DPI) | 1  # gaps (and strips of lid at the bed edge) narrower than ~10 mm
     # Pad with black so a strip of lid between a print and the bed edge also counts as a thin line.
     padded = cv2.copyMakeBorder(g, k, k, k, k, cv2.BORDER_CONSTANT, value=0)
     tophat = cv2.morphologyEx(padded, cv2.MORPH_TOPHAT,
                               cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))[k:-k, k:-k]
+    tint = None
+    if reference is not None:
+        ref = cv2.GaussianBlur(cv2.resize(reference, small.shape[1::-1], interpolation=cv2.INTER_LINEAR), (5, 5), 0)
+        tint = (cv2.GaussianBlur(small, (5, 5), 0), ref)
+    return g, tophat, tint
+
+
+def _tint_off(tint, a, b):
+    """How far from the lid's tint the pixels along segment a-b are (median), or 0 without an empty-bed scan."""
+    if tint is None:
+        return 0.0
+    pic, ref = tint
+    t = np.linspace(0, 1, 64)[:, None]
+    xy = np.rint(a + t * (b - a)).astype(int)
+    xs, ys = np.clip(xy[:, 0], 0, pic.shape[1] - 1), np.clip(xy[:, 1], 0, pic.shape[0] - 1)
+    d = pic[ys, xs].astype(np.float32) - ref[ys, xs]
+    return float(np.median(np.abs(d - d.mean(axis=1, keepdims=True)).max(axis=1)))
+
+
+def _gap_lines(g, tophat, sens=NORMAL, tint=None):
+    """Long, thin, straight bright lines: the strip of lid showing between prints a few mm apart.
+
+    g, tophat, tint: from _thin_bright. Returns segments in WORK_DPI coordinates. Only near-horizontal/vertical
+    lines count, since gaps follow the edges of roughly straight-placed prints.
+    """
     thin = ((tophat > sens.tophat) & (g > sens.lid_min)).astype(np.uint8) * 255
     segs = cv2.HoughLinesP(thin, 1, np.pi / 360, threshold=int(sens.hough * GAP_DPI),
                            minLineLength=int(sens.line_in * GAP_DPI), maxLineGap=int(sens.line_gap * GAP_DPI))
@@ -175,6 +222,8 @@ def _gap_lines(img, dpi, sens=NORMAL):
         ang = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1))) % 90
         if min(ang, 90 - ang) > sens.angle:
             continue
+        if _tint_off(tint, np.array([x1, y1], float), np.array([x2, y2], float)) > LID_TINT + 1:
+            continue  # pale plain picture (sky), not lid
         # stretch each end (up to 0.3") so the cut reaches the blob's outer edge, but only over lid:
         # the lid strip along the glass edge ends where the next print begins, and must not cut into it
         d = np.array([x2 - x1, y2 - y1], float)
@@ -232,7 +281,7 @@ def _split_touching(contours, shape, lines, sens=NORMAL):
     return out
 
 
-MIN_PIECE_IN = 2.0  # the smallest print _split_stacked will cut off a blob
+MIN_PIECE_IN = 2.0  # the smallest print _stacked will cut off a blob
 
 
 def _fit_errors(ys, xs):
@@ -250,11 +299,6 @@ def _fit_errors(ys, xs):
         cxy = (sxy[b] - sxy[a]) - x * y / np.maximum(cnt, 1)
         return np.maximum(vx - cxy * cxy / np.maximum(vy, 1e-9), 0)
     return err
-
-
-def _split_stacked(c, gray, sens=NORMAL):
-    """[c], or the contours of the two prints lying edge to edge in blob c (see _stacked)."""
-    return _stacked(c, gray, sens)[0]
 
 
 def _stacked(c, gray, sens=NORMAL):
@@ -376,7 +420,39 @@ def _strip_width(flags, level, reach, dpi):
     return int(end)
 
 
-def _trim_lid(img, rect, dpi, lid):
+LID_TINT = 4  # a line of lid has the empty bed's colour: off it by at most this much once brightness is evened
+
+
+def _matches_lid(pic, ref, axis):
+    """Which lines of the straightened picture have the colour of the empty lid at the same spot (ref, the
+    empty-bed scan cut the same way): a strip of lid only differs from it in brightness (a little shadow),
+    sky or a wall in a picture also in tint, however plain and pale it is."""
+    along = (slice(None, None, 8), slice(None)) if axis == 0 else (slice(None), slice(None, None, 8))
+    pic, ref = pic[along], ref[along]  # every 8th pixel along a line is plenty for its average colour
+    delta = pic.mean(axis=axis, dtype=np.float32) - ref.mean(axis=axis, dtype=np.float32)  # per line, B G R
+    level = delta.mean(axis=-1, keepdims=True)
+    return (np.abs(delta - level).max(axis=-1) <= LID_TINT) & (level[..., 0] > -25) & (level[..., 0] < 6)
+
+
+def _lid_tint_lines(pic, ref, axis, n):
+    """_matches_lid for the first and last `n` lines only (the ones near the sides; the rest are False)."""
+    count = pic.shape[1 - axis]
+    out = np.zeros(count, bool)
+    for part in (slice(0, min(n, count)), slice(max(count - n, 0), count)):
+        idx = (slice(None), part) if axis == 0 else (part, slice(None))
+        out[part] = _matches_lid(pic[idx], ref[idx], axis)
+    return out
+
+
+def _empty_bed_crop(reference, img_shape, rect, dpi, size):
+    """The empty-bed scan (any resolution) cut out like `rect` of a scan of `img_shape`, at `size` (W, H)."""
+    f = reference.shape[1] / img_shape[1]
+    (cx, cy), (w, h), a = rect
+    small = crop(reference, ((cx * f, cy * f), (w * f, h * f), a), dpi * f, inset_mm=0)
+    return cv2.resize(small, size, interpolation=cv2.INTER_LINEAR) if small.size else None
+
+
+def _trim_lid(img, rect, dpi, lid, reference=None):
     """Cut strips of plain lid off the sides of a rough rect, wider than _refine looks (it only sees ±2.5 mm).
 
     A strip of lid beside a print stays glued to it when the print lies a few mm from the glass edge (the
@@ -384,19 +460,25 @@ def _trim_lid(img, rect, dpi, lid):
     edge of the scan is looked at, and only a strip that runs along all of it, looks like lid (see _lid_like)
     and ends in a clear edge goes; the print keeps at least MIN_PIECE_IN each way. So a plain bright area
     inside a picture (grey sky, a white border) is left alone on prints that lie away from the glass edge.
+    Prints are often pushed against the glass edge, so a strip there must also have the lid's own colour in
+    the empty-bed scan (`reference`); without one nothing is trimmed.
     """
     (cx, cy), (w, h), a = rect
     edges = _on_scan_edge(img.shape, rect, dpi)
-    if not any(edges):
+    if reference is None or not any(edges):
         return rect
     pic = crop(img, rect, dpi, inset_mm=0)
     if pic.size == 0:
+        return rect
+    ref = _empty_bed_crop(reference, img.shape, rect, dpi, pic.shape[1::-1])
+    if ref is None:
         return rect
     g = cv2.GaussianBlur(cv2.cvtColor(pic, cv2.COLOR_BGR2GRAY), (3, 3), 0).astype(np.float32)
     H, W = g.shape
     core_r, core_c = slice(int(0.1 * H), int(0.9 * H)), slice(int(0.1 * W), int(0.9 * W))
     reach = int(TRIM_MAX_MM / 25.4 * dpi)
-    cols, rows = _lid_like(g[core_r, :], 0, lid), _lid_like(g[:, core_c], 1, lid)
+    cols = _lid_like(g[core_r, :], 0, lid) & _lid_tint_lines(pic[core_r, :], ref[core_r, :], 0, reach + 1)
+    rows = _lid_like(g[:, core_c], 1, lid) & _lid_tint_lines(pic[:, core_c], ref[:, core_c], 1, reach + 1)
     col_level, row_level = g[core_r, :].mean(axis=0), g[:, core_c].mean(axis=1)
     left, right = (_strip_width(cols[::s], col_level[::s], reach, dpi) for s in (1, -1))
     top, bottom = (_strip_width(rows[::s], row_level[::s], reach, dpi) for s in (1, -1))
@@ -426,16 +508,19 @@ def _on_scan_edge(shape, rect, dpi, mm=2.0):
     return tuple(out)
 
 
-def _refine(img, rect, dpi, lid):
+def _refine(img, rect, dpi, lid, reference=None):
     """Snap each side of a rough rect to the exact print edge, at full resolution.
 
     Looks ±2.5 mm around each side for "lid-like" lines (plain, about as bright as
     the empty lid, even if a bit shadowed); the print starts just inside the
     innermost one. That works whether lid, a gap or a neighbouring print lies outside.
+    With the empty-bed scan, a lid-like line must also have the lid's tint (pale sky is no lid).
     """
     (cx, cy), (w, h), a = rect
     m = int(2.5 / 25.4 * dpi)
-    big = crop(img, ((cx, cy), (w + 2 * m, h + 2 * m), a), dpi, inset_mm=0)
+    wide = ((cx, cy), (w + 2 * m, h + 2 * m), a)
+    big = crop(img, wide, dpi, inset_mm=0)
+    ref = _empty_bed_crop(reference, img.shape, wide, dpi, big.shape[1::-1]) if reference is not None else None
     g = cv2.GaussianBlur(cv2.cvtColor(big, cv2.COLOR_BGR2GRAY), (3, 3), 0).astype(np.float32)
     H, W = g.shape
     core_r, core_c = slice(int(0.1 * H), int(0.9 * H)), slice(int(0.1 * W), int(0.9 * W))
@@ -449,8 +534,12 @@ def _refine(img, rect, dpi, lid):
         xy = pts @ inv.T + (cx, cy)
         return (xy[:, 0] < 0) | (xy[:, 0] >= img.shape[1]) | (xy[:, 1] < 0) | (xy[:, 1] >= img.shape[0])
 
-    cols = _lid_like(g[core_r, :], 0, lid) | outside(np.arange(W) - W / 2 + 0.5, 0)
-    rows = _lid_like(g[:, core_c], 1, lid) | outside(np.arange(H) - H / 2 + 0.5, 1)
+    cols, rows = _lid_like(g[core_r, :], 0, lid), _lid_like(g[:, core_c], 1, lid)
+    if ref is not None:
+        cols &= _lid_tint_lines(big[core_r, :], ref[core_r, :], 0, 2 * m)
+        rows &= _lid_tint_lines(big[:, core_c], ref[:, core_c], 1, 2 * m)
+    cols |= outside(np.arange(W) - W / 2 + 0.5, 0)
+    rows |= outside(np.arange(H) - H / 2 + 0.5, 1)
 
     def edge(flags):  # just inside the innermost lid line in the band; no lid there -> keep rough edge
         hits = np.flatnonzero(flags[:2 * m])

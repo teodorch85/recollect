@@ -90,6 +90,7 @@ class App:
         self.front_scan = None        # (full-resolution scan, dpi) of the fronts on the glass, for "Find prints again"
         self._check_win = None        # the Check prints window, while open
         self._checked = None          # (rects, started, replacing) the user confirmed, for the job that saves them
+        self._removed = []            # rects of the duplicates removed from the bed on the glass: not found again
         self.reference = cv2.imread(str(REFERENCE_FILE)) if REFERENCE_FILE.exists() else None
         self._cat = None
         self._review = None  # the Review photos window, while open
@@ -372,7 +373,7 @@ class App:
             self.skip_btn.config(state="normal")
             self.redo_btn.config(state="normal")
             self.again_btn.config(state="normal" if self.front_scan is not None else "disabled")
-            self.status.set(f"Saved {bed.plural(len(self.bed), 'front')}. Flip each print over IN THE SAME SPOT, "
+            self.status.set(f"Saved {library.plural(len(self.bed), 'front')}. Flip each print over IN THE SAME SPOT, "
                             "close the lid, press Space.  (N = no backs for this bed)")
         try:
             self.count_var.set(f"Photos: {self._catalog().count()}")
@@ -754,6 +755,7 @@ class App:
         dups = [p for p in self.bed if p.get("dup")]
         for p in dups:
             organizer.remove_photo(self._catalog(), p["id"])
+        self._removed += [p["rect"] for p in dups]
         self.bed = [p for p in self.bed if not p.get("dup")]
         if not self.bed:
             self.state, self.front_scan = "front", None
@@ -794,7 +796,7 @@ class App:
         saved = [p["rect"] for p in self.bed] if replacing else None
         note = None
         if replacing and len(rects) <= len(saved):
-            note = (f"Looking again found {bed.plural(len(rects), 'print')} (saved now: {len(saved)}). "
+            note = (f"Looking again found {library.plural(len(rects), 'print')} (saved now: {len(saved)}). "
                     "Ctrl+Z shows the saved ones.")
 
         def save(confirmed):
@@ -802,7 +804,7 @@ class App:
                 cancel()
                 return
             self._checked = (confirmed, started, replacing)
-            self._run(self._do_save_checked, f"Saving {len(confirmed)} photo{'s' if len(confirmed) != 1 else ''}…")
+            self._run(self._do_save_checked, f"Saving {library.plural(len(confirmed), 'photo')}…")
 
         def cancel():
             if replacing:  # the fronts saved before are untouched
@@ -928,7 +930,7 @@ class App:
         key = rotate.get_key()
         if not key:
             return [None] * len(photos), "no API key (Settings ▸ Claude)"
-        self.job.note(f"Checking which way is up ({len(photos)} photo{'s' if len(photos) > 1 else ''})…")
+        self.job.note(f"Checking which way is up ({library.plural(len(photos), 'photo')})…")
         return rotate.orient_all(key, photos)
 
     def _do_reset_scanner(self):
@@ -941,6 +943,7 @@ class App:
         self.job.phase(0, 0.6, bed.scan_seconds(dpi))
         img = scan_bed(dpi)
         self.front_scan = (img, dpi)  # kept until the bed is done: "Find prints again" looks at it again
+        self._removed = []
         self.job.progress(0.6)
         self.job.stop_point()
         found = bed.find_fronts(img, dpi, self.reference)
@@ -950,37 +953,51 @@ class App:
         if found.unsure:  # nothing is saved until the user has looked at the boxes
             names = detect.print_names(found.unsure)
             return (detect.draw_overlay(img, found.rects, alert=found.unsure),
-                    f"Found {len(found.rects)} print{'s' if len(found.rects) != 1 else ''}, but I am not sure "
+                    f"Found {library.plural(len(found.rects), 'print')}, but I am not sure "
                     f"about {names} (red). "
                     "Nothing is saved yet: check them in the window.",
                     lambda: self._check_prints(found.rects, found.unsure, started))
         return self._save_rects(img, dpi, found.rects, started)
 
-    def _save_rects(self, img, dpi, rects, started):
+    def _save_rects(self, img, dpi, rects, started, replaces=()):
         """Save the fronts at these rects (in the job thread). Returns what a job returns: (view, message, *then)."""
         done = bed.save_fronts(self._catalog(), img, dpi, self.reference, self.s, self.batch_var.get().strip(),
-                               self.backs_var.get(), self._orient, self.job, started, rects=rects)
+                               self.backs_var.get(), self._orient, self.job, started, rects=rects, replaces=replaces)
+        self.bed = done.bed
         if done.bed:
-            self.state, self.bed = "back", done.bed
+            self.state = "back"
         else:
             self.front_scan = None  # filed already, or nothing saved
         then = [lambda: self._set_clickable(img, *done.shown)] if done.shown else []
         return (done.view, done.message, *then)
 
     def _do_save_checked(self):
-        """Save the prints the user confirmed in the Check prints window. From "Find prints again" the fronts
-        saved before are replaced (dropped first, or the new ones would be taken for duplicates of them)."""
+        """Save the prints the user confirmed in the Check prints window. From "Find prints again" they replace
+        the fronts saved before: those go only once the new ones are saved (Cancel or a failure keeps them),
+        and a turn you gave one carries over to the new front of the same print."""
         rects, started, replacing = self._checked
         img, dpi = self.front_scan
-        if replacing:
-            bed.drop(self._catalog(), self.bed)
-            self.state, self.bed = "front", []
-        return self._save_rects(img, dpi, rects, started)
+        if not replacing:
+            return self._save_rects(img, dpi, rects, started)
+        cat, old = self._catalog(), list(self.bed)
+        turns = {r["id"]: r.get("turn") for r in cat.rows() if r["id"] in {p["id"] for p in old}}
+        result = self._save_rects(img, dpi, rects, started, replaces=[p["id"] for p in old])
+        for p in self.bed:
+            same = next((o for o in old if detect.same_print(o["rect"], p["rect"], dpi)), None)
+            if same and turns.get(same["id"]):
+                cat.upsert(p["id"], turn=turns[same["id"]])
+        bed.drop(cat, old)
+        if not self.bed:  # filed at once (no backs): nothing waits on the glass
+            self.state = "front"
+        return result
 
     def _do_find_again(self):
         img, dpi = self.front_scan
         rects, unsure = detect.find_prints(img, dpi, self.reference, finer=True)
-        return (None, f"Looked again, more carefully: {len(rects)} print{'s' if len(rects) != 1 else ''} "
+        keep = [i for i, r in enumerate(rects) if not any(detect.same_print(r, d, dpi) for d in self._removed)]
+        unsure = [keep.index(i) for i in unsure if i in keep]
+        rects = [rects[i] for i in keep]  # duplicates you removed stay removed
+        return (None, f"Looked again, more carefully: {library.plural(len(rects), 'print')} "
                       f"(saved now: {len(self.bed)}). Check them in the window.",
                 lambda: self._check_prints(rects, unsure, time.time(), finer=True, replacing=True))
 
