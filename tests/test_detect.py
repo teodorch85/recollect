@@ -181,3 +181,16 @@ def test_grey_sky_along_a_side_is_not_trimmed_away():
     truth = fakes.place(img, p, 640, 700)
     (found,) = detect.find_photos(img, DPI, EMPTY)
     assert all(abs(s - t) <= 14 for s, t in zip(found[1], truth[1]))  # it lost 45 px of sky
+
+
+@pytest.mark.parametrize("sky", [(222, 214, 208), (225, 215, 200)])
+def test_sky_of_a_print_against_the_glass_edge_is_not_trimmed(sky):
+    """Prints are usually pushed into the corner of the glass: a plain strip of sky along the side that
+    touches the edge is still picture, not lid (lid matches the empty-bed scan in colour, sky does not)."""
+    img = fakes.lid(H, W)
+    p = fakes.picture(590, 885, seed=5)
+    p[:47] = sky  # 8 mm of plain sky, then the picture
+    truth = fakes.place(img, p, 443, 296)  # top-left corner of the glass
+    for refine in (True, False):
+        (found,) = detect.find_photos(img, DPI, EMPTY, refine=refine)
+        assert all(abs(s - t) <= 8 for s, t in zip(found[1], truth[1])), (refine, found)

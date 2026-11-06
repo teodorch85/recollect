@@ -13,12 +13,20 @@ import sequence
     ("0045 NNN 012", ("45", 12)),
     ("IMG_0456.JPG", ("IMG", 456)),
     ("DSC01234.JPG 10x15", ("DSC", 1234)),
+    ("P1010023.JPG", ("P", 1010023)),
+    ("100-0123.JPG", ("100", 123)),
     ("Κρήτη 1994", ("", None)),         # personal writing is not a frame
     ("15/7/94 with Maria", ("", None)),
     ("", ("", None)),
 ])
 def test_roll_and_frame(text, found):
     assert sequence.parse_lab(text) == found
+
+
+def test_handwriting_on_the_back_is_no_frame_number():
+    assert sequence.frame_of({"back_lab": "", "back_text": "Νίκος (2)\nΚρήτη 1994"}) == ("", None)
+    assert sequence.frame_of({"back_lab": "", "back_text": "<12> 0045"}) == ("45", 12)  # a lab line read as text
+    assert sequence.parse_lab("Νίκος (2)") == ("", 2)  # in the lab lines it would count
 
 
 def test_lab_lines_are_told_from_writing():

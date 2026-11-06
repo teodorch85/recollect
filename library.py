@@ -44,6 +44,11 @@ class Job:
             raise Cancelled
 
 
+def plural(n, word):
+    """'1 photo', '3 photos'."""
+    return f"{n} {word}{'s' if n != 1 else ''}"
+
+
 def say(*parts):
     """A status line: the parts given, then what the last organize() couldn't do, if anything."""
     return " ".join(t for t in (*parts, organizer.problem_text()) if t)

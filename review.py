@@ -132,7 +132,7 @@ class Review:
         batch = self.batch.get()
         self.rows = [r for r in cat.rows("status IN ('ready', 'filed')")
                      if batch == ALL or organizer.same_batch(r.get("batch"), batch)]
-        self.count.set(f"{len(self.rows)} photo{'s' if len(self.rows) != 1 else ''}")
+        self.count.set(library.plural(len(self.rows), "photo"))
         for child in self.inner.winfo_children():
             child.destroy()
         self.cells = []
